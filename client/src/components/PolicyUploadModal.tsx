@@ -103,16 +103,18 @@ export default function PolicyUploadModal({
     setUploadProgress(0);
 
     try {
-      // 模拟上传进度
+      // Issue #1 修复：进度条平滑递增，每次最多增加 10%，且严格限制在 0-90 之间
+      // 避免随机步长过大导致进度超过 100% 显示异常
       const progressInterval = setInterval(() => {
         setUploadProgress((prev) => {
           if (prev >= 90) {
             clearInterval(progressInterval);
-            return prev;
+            return 90;
           }
-          return prev + Math.random() * 30;
+          const increment = Math.random() * 10 + 2; // 每次增加 2-12%
+          return Math.min(prev + increment, 90);
         });
-      }, 300);
+      }, 400);
 
       const { extractTextFromPDF } = await import("@/lib/pdfExtractor");
       const { uploadPolicyPDF } = await import("@/lib/api");
@@ -380,11 +382,11 @@ export default function PolicyUploadModal({
                   className="h-full rounded-full transition-all duration-300"
                   style={{
                     backgroundColor: "#F59E0B",
-                    width: `${uploadProgress}%`,
+                    width: `${Math.min(100, uploadProgress)}%`,
                   }}
                 />
               </div>
-              <div className="text-xs text-muted-foreground mt-2">{Math.round(uploadProgress)}%</div>
+              <div className="text-xs text-muted-foreground mt-2">{Math.min(100, Math.max(0, Math.round(uploadProgress)))}%</div>
             </div>
           </div>
         )}
