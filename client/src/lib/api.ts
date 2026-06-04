@@ -61,6 +61,7 @@ export interface ChatResponse {
   message: string;           // AI 回复内容
   sessionId: string;         // 会话 ID
   isComplete: boolean;       // 是否已收集足够信息，可生成报告
+  completenessScore?: number; // 信息完整度分数（0-100），由 AI 根据已收集字段数量计算
   suggestedQuestions?: string[]; // 可选的追问建议
 }
 
@@ -221,11 +222,20 @@ export async function sendChatMessage(req: ChatRequest): Promise<ChatResponse> {
     const rawMessage = res.choices?.[0]?.message?.content || "";
     // Bug 2 修复：通过 AI 在回复末尾附加 [INFO_COMPLETE] 标记来判断信息是否充足
     const isComplete = rawMessage.includes("[INFO_COMPLETE]");
-    const message = rawMessage.replace(/\[INFO_COMPLETE\]/g, "").trim();
+    // Issue #2 修复：解析 [COMPLETENESS:N] 标记，获取信息完整度分数
+    const completenessMatch = rawMessage.match(/\[COMPLETENESS:(\d+)\]/);
+    const completenessScore = completenessMatch
+      ? Math.min(100, Math.max(0, parseInt(completenessMatch[1], 10)))
+      : undefined;
+    const message = rawMessage
+      .replace(/\[INFO_COMPLETE\]/g, "")
+      .replace(/\[COMPLETENESS:\d+\]/g, "")
+      .trim();
     return {
       message,
       sessionId: req.sessionId,
       isComplete,
+      completenessScore,
     };
   });
 }

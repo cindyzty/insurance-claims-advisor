@@ -109,6 +109,7 @@ export default function Consult() {
   const [expandedDocs, setExpandedDocs] = useState<Set<number>>(new Set());
   const [probAnimated, setProbAnimated] = useState(false);
   const [clauseRelevance, setClauseRelevance] = useState<Map<number, any[]>>(new Map());
+  const [completenessScore, setCompletenessScore] = useState<number>(0);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -234,6 +235,9 @@ export default function Consult() {
         });
       }
       if (response.isComplete) setCanGenerateReport(true);
+      if (response.completenessScore !== undefined) {
+        setCompletenessScore(response.completenessScore);
+      }
     } catch {
       toast.error("发送失败，请检查网络连接后重试");
     } finally {
@@ -669,8 +673,43 @@ export default function Consult() {
               <Shield className="w-12 h-12 text-muted-foreground mb-3 opacity-50" />
               <p className="text-sm text-muted-foreground mb-4">
                 收集足够信息后，<br />
-                点击下方按钮生成理赔评估报告
+                点击下方按鈕生成理赔评估报告
               </p>
+              {/* Issue #2 修复：显示信息完整度进度条 */}
+              <div className="w-full max-w-xs mb-5">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs text-muted-foreground">信息完整度</span>
+                  <span
+                    className="text-xs font-semibold"
+                    style={{
+                      color: completenessScore >= 60 ? "#22C55E" : completenessScore >= 30 ? "#F59E0B" : "#9CA3AF",
+                    }}
+                  >
+                    {completenessScore}%
+                  </span>
+                </div>
+                <div
+                  className="w-full h-1.5 rounded-full overflow-hidden"
+                  style={{ backgroundColor: "rgba(255,255,255,0.08)" }}
+                >
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${completenessScore}%`,
+                      backgroundColor: completenessScore >= 60 ? "#22C55E" : completenessScore >= 30 ? "#F59E0B" : "#6B7280",
+                    }}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground mt-1.5">
+                  {completenessScore === 0
+                    ? "请描述您的理赔情况"
+                    : completenessScore < 30
+                    ? "继续补充事故经过、时间、医院等信息"
+                    : completenessScore < 60
+                    ? "进展不错！还需补充费用、诊断等信息"
+                    : "信息已足够，可以生成报告"}
+                </p>
+              </div>
               <Button
                 onClick={handleGenerateReport}
                 disabled={!canGenerateReport || isGeneratingReport}
