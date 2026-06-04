@@ -1,0 +1,215 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "./enhanced-animations.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * ============================================================
+ * DESIGN SYSTEM: 「法律文书」深色专业风
+ * Design Movement: Neo-Classical Professional
+ * Primary: Deep Charcoal (#1C1C1E) bg, Gold (#F59E0B) accent
+ * Typography: Playfair Display (headings) + IBM Plex Sans SC (body)
+ * Layout: Left-right split panel — chat (60%) + report (40%)
+ * ============================================================
+ */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-gold: var(--gold);
+  --color-gold-dim: var(--gold-dim);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+}
+
+:root {
+  /* Gold accent */
+  --gold: oklch(0.75 0.15 75);
+  --gold-dim: oklch(0.65 0.12 75);
+
+  /* Dark theme as default */
+  --radius: 0.5rem;
+  --background: oklch(0.12 0.005 285);
+  --foreground: oklch(0.92 0.005 65);
+  --surface: oklch(0.16 0.006 285);
+  --surface-raised: oklch(0.20 0.007 285);
+  --card: oklch(0.16 0.006 285);
+  --card-foreground: oklch(0.92 0.005 65);
+  --popover: oklch(0.18 0.006 285);
+  --popover-foreground: oklch(0.92 0.005 65);
+  --primary: oklch(0.75 0.15 75);
+  --primary-foreground: oklch(0.12 0.005 285);
+  --secondary: oklch(0.22 0.007 285);
+  --secondary-foreground: oklch(0.80 0.005 65);
+  --muted: oklch(0.20 0.006 285);
+  --muted-foreground: oklch(0.58 0.012 285);
+  --accent: oklch(0.22 0.007 285);
+  --accent-foreground: oklch(0.92 0.005 65);
+  --destructive: oklch(0.62 0.22 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.75 0.15 75);
+  --chart-1: oklch(0.75 0.15 75);
+  --chart-2: oklch(0.65 0.12 75);
+  --chart-3: oklch(0.55 0.10 75);
+  --chart-4: oklch(0.45 0.08 75);
+  --chart-5: oklch(0.35 0.06 75);
+  --sidebar: oklch(0.14 0.005 285);
+  --sidebar-foreground: oklch(0.92 0.005 65);
+  --sidebar-primary: oklch(0.75 0.15 75);
+  --sidebar-primary-foreground: oklch(0.12 0.005 285);
+  --sidebar-accent: oklch(0.20 0.006 285);
+  --sidebar-accent-foreground: oklch(0.92 0.005 65);
+  --sidebar-border: oklch(1 0 0 / 8%);
+  --sidebar-ring: oklch(0.75 0.15 75);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'IBM Plex Sans SC', 'Noto Sans SC', system-ui, sans-serif;
+  }
+  h1, h2, h3 {
+    font-family: 'Playfair Display', 'Noto Serif SC', Georgia, serif;
+  }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [type="button"]:not(:disabled),
+  [type="submit"]:not(:disabled),
+  [type="reset"]:not(:disabled),
+  a[href],
+  select:not(:disabled),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled) {
+    @apply cursor-pointer;
+  }
+}
+
+@layer components {
+  .container {
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .flex {
+    min-height: 0;
+    min-width: 0;
+  }
+
+  @media (min-width: 640px) {
+    .container {
+      padding-left: 1.5rem;
+      padding-right: 1.5rem;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .container {
+      padding-left: 2rem;
+      padding-right: 2rem;
+      max-width: 1440px;
+    }
+  }
+
+  /* Gold divider line */
+  .gold-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, oklch(0.75 0.15 75 / 60%), transparent);
+  }
+
+  /* Glassmorphism card */
+  .glass-card {
+    background: oklch(1 0 0 / 4%);
+    border: 1px solid oklch(1 0 0 / 8%);
+    backdrop-filter: blur(12px);
+  }
+
+  /* Gold accent border */
+  .gold-border-left {
+    border-left: 3px solid oklch(0.75 0.15 75);
+  }
+
+  /* Chat bubble animations */
+  @keyframes slideInLeft {
+    from { opacity: 0; transform: translateX(-12px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes slideInRight {
+    from { opacity: 0; transform: translateX(12px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes typingDot {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+    30% { transform: translateY(-4px); opacity: 1; }
+  }
+  @keyframes progressFill {
+    from { width: 0%; }
+    to { width: var(--target-width); }
+  }
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+
+  .msg-ai { animation: slideInLeft 0.22s cubic-bezier(0.23, 1, 0.32, 1); }
+  .msg-user { animation: slideInRight 0.22s cubic-bezier(0.23, 1, 0.32, 1); }
+  .fade-in-up { animation: fadeInUp 0.28s cubic-bezier(0.23, 1, 0.32, 1); }
+
+  .typing-dot {
+    animation: typingDot 1.2s ease-in-out infinite;
+  }
+  .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: oklch(1 0 0 / 15%); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: oklch(0.75 0.15 75 / 40%); }
+}
