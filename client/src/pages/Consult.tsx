@@ -31,6 +31,8 @@ import {
   Shield,
   ClipboardList,
   TrendingUp,
+  RefreshCw,
+  ChevronDown as ChevronDownIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -77,7 +79,7 @@ export default function Consult() {
   const [location, setLocation] = useLocation();
   
   // 从浏览器地址栏直接获取查询参数（最可靠的方式）
-  const getInsuranceType = (): InsuranceType => {
+  const getInitialInsuranceType = (): InsuranceType => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const type = params.get('type');
@@ -92,8 +94,10 @@ export default function Consult() {
     }
     return 'other';
   };
-  
-  const insuranceType = getInsuranceType();
+
+  // Issue #4 修复：将 insuranceType 改为 state，支持用户在对话中切换险种
+  const [insuranceType, setInsuranceType] = useState<InsuranceType>(getInitialInsuranceType);
+  const [showTypeDropdown, setShowTypeDropdown] = useState(false);
 
   const [sessionId, setSessionId] = useState<string>("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -112,6 +116,18 @@ export default function Consult() {
   const [completenessScore, setCompletenessScore] = useState<number>(0);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const typeDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Issue #4：点击页面其他地方时关闭险种下拉菜单
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (typeDropdownRef.current && !typeDropdownRef.current.contains(e.target as Node)) {
+        setShowTypeDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   // 初始化会话或恢复历史会话
   useEffect(() => {
@@ -267,6 +283,52 @@ export default function Consult() {
     }
   };
 
+  // Issue #4 修复：刷新报告——重新调用 AI 生成最新报告
+  const handleRefreshReport = async () => {
+    if (!canGenerateReport && !report) {
+      toast.info("请先描述您的理赔情况，收集足够信息后再生成报告");
+      return;
+    }
+    setIsGeneratingReport(true);
+    try {
+      const result = await generateClaimAssessment(sessionId, messages, insuranceType, policyInfo);
+      setReport(result);
+      setProbAnimated(false);
+      setActiveReportTab("overview");
+      toast.success("报告已按最新信息重新生成");
+    } catch {
+      toast.error("报告刷新失败，请稍后重试");
+    } finally {
+      setIsGeneratingReport(false);
+    }
+  };
+
+  // Issue #4 修复：切换险种类型，并自动重新生成报告
+  const handleChangeInsuranceType = async (newType: InsuranceType) => {
+    if (newType === insuranceType) {
+      setShowTypeDropdown(false);
+      return;
+    }
+    setInsuranceType(newType);
+    setShowTypeDropdown(false);
+    toast.info(`已切换为「${TYPE_LABELS[newType]}」，正在重新生成报告...`);
+    // 切换险种后自动重新生成报告（如果已有报告或已收集足够信息）
+    if (report || canGenerateReport) {
+      setIsGeneratingReport(true);
+      try {
+        const result = await generateClaimAssessment(sessionId, messages, newType, policyInfo);
+        setReport(result);
+        setProbAnimated(false);
+        setActiveReportTab("overview");
+        toast.success(`已按「${TYPE_LABELS[newType]}」重新生成报告`);
+      } catch {
+        toast.error("报告重新生成失败，请稍后重试");
+      } finally {
+        setIsGeneratingReport(false);
+      }
+    }
+  };
+
   const toggleDocExpand = (i: number) => {
     setExpandedDocs((prev) => {
       const next = new Set(prev);
@@ -324,6 +386,37 @@ export default function Consult() {
           </Badge>
         </div>
         <div className="flex items-center gap-2">
+          {/* Issue #4 修复：险种切换下拉菜单 */}
+          <div className="relative" ref={typeDropdownRef}>
+            <button
+              onClick={() => setShowTypeDropdown((v) => !v)}
+              className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-border hover:border-amber-500/50 transition-colors"
+              style={{ backgroundColor: "rgba(245,158,11,0.08)", color: "#F59E0B" }}
+            >
+              {TYPE_LABELS[insuranceType]}
+              <ChevronDownIcon className="w-3 h-3" />
+            </button>
+            {showTypeDropdown && (
+              <div
+                className="absolute right-0 top-full mt-1 z-50 rounded-lg border border-border shadow-lg overflow-hidden"
+                style={{ backgroundColor: "var(--card)", minWidth: "120px" }}
+              >
+                {(Object.entries(TYPE_LABELS) as [InsuranceType, string][]).map(([type, label]) => (
+                  <button
+                    key={type}
+                    onClick={() => handleChangeInsuranceType(type)}
+                    className="w-full text-left px-3 py-2 text-xs hover:bg-accent transition-colors"
+                    style={{
+                      color: type === insuranceType ? "#F59E0B" : "var(--foreground)",
+                      backgroundColor: type === insuranceType ? "rgba(245,158,11,0.08)" : "transparent",
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <Button
             variant="outline"
             size="sm"
@@ -333,6 +426,20 @@ export default function Consult() {
             <FileText className="w-3.5 h-3.5" />
             {policyInfo ? "已上传保单" : "上传保单"}
           </Button>
+          {/* Issue #4 修复：刷新报告按鈕 */}
+          {(report || canGenerateReport) && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-xs gap-1.5 border-border"
+              onClick={handleRefreshReport}
+              disabled={isGeneratingReport}
+              title="按最新对话内容重新生成报告"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isGeneratingReport ? "animate-spin" : ""}`} />
+              刷新报告
+            </Button>
+          )}
           {report && (
             <Button
               variant="outline"
