@@ -93,8 +93,10 @@ async function verifyIsInsurancePolicy(pageImages: string[]): Promise<boolean> {
             ],
           },
         ],
-        max_tokens: 5,
+        max_tokens: 100,
         temperature: 0,
+        // 禁用 thinking 模式，避免 reasoning token 占满导致 content 为空
+        thinking: { type: "disabled" },
       }),
     });
 
