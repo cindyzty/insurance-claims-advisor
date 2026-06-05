@@ -7,6 +7,15 @@
 
 import type { PolicyInfo, InsuranceType } from './api';
 
+/** 回复风格要求（所有场景通用） */
+const REPLY_STYLE = `
+【回复规范】
+- 禁止客套话（不说"您好"、"感谢您的信任"、"很抱歉听到"等）
+- 禁止复述条款原文或大段引用条款内容
+- 直接给出结论和建议，每次回复不超过 150 字
+- 如需追问，每次只问一个最关键的问题
+- 格式：先给结论，再说建议，最后追问（如有）`.trim();
+
 /**
  * 构建保单信息上下文供 AI 使用
  */
@@ -15,7 +24,9 @@ export function buildPolicyContext(
   insuranceType: InsuranceType
 ): string {
   const parts: string[] = [
-    '你是专业保险理赔顾问。用户已上传保单，请基于以下保单信息提供理赔建议：',
+    '你是专业保险理赔顾问。用户已上传保单，请基于以下保单信息提供理赔建议。',
+    '',
+    REPLY_STYLE,
     '',
   ];
 
@@ -47,11 +58,11 @@ export function buildPolicyContext(
     parts.push(`到期日期：${policyInfo.expiryDate}`);
   }
 
-  // 修复：不再把完整 PDF 文本全部注入（会导致 token 超限、内容返回空）
-  // 改为只提示 AI 保单已上传，具体条款通过追问时在对话中提供
+  // 不再把完整 PDF 文本全部注入（会导致 token 超限）
+  // 改为只提示 AI 保单已上传，具体条款通过引用条款区块展示
   if (policyInfo.policyText) {
     parts.push('');
-    parts.push(`注意：用户已上传保单条款文件（共 ${Math.round(policyInfo.policyText.length / 1000)}k 字）。请基于保单摘要信息回答用户问题。如需引用具体条款，请告知用户可在当前界面查看“引用条款”区块。`);
+    parts.push(`注意：用户已上传保单条款文件（共 ${Math.round(policyInfo.policyText.length / 1000)}k 字）。请基于保单摘要信息回答，具体条款用户可在界面"引用条款"区块查看，无需在回复中复述。`);
   }
 
   // 添加保单摘要信息
@@ -80,10 +91,9 @@ export function buildPolicyContext(
   }
 
   parts.push('');
-  parts.push('请根据用户的具体情况，结合上述保单信息，提供专业的理赔建议。');
-  parts.push('如果用户的情况不在保单覆盖范围内，请明确指出。');
-  parts.push('在每次回复末尾，必须附加一行：[COMPLETENESS:数字]，其中数字为 0-100 的整数，表示当前已收集到的理赔信息完整度。计算规则：每收集到一项关键信息（事故经过、事发时间、事发地点、损失金额、保单号、医院名称、诊断结果、已有材料、费用金额、社保情况）各占 10 分。示例：用户仅说明了事故经过，返回 [COMPLETENESS:10]；如果还提供了时间和医院，返回 [COMPLETENESS:30]。');
-  parts.push('当你已经收集到足够的信息（包括：事故经过、保单信息、损失情况）可以生成理赔评估报告时，在回复末尾附加 [INFO_COMPLETE] 标记。');
+  parts.push('如果用户的情况不在保单覆盖范围内，请直接说明并给出替代建议。');
+  parts.push('在每次回复末尾，必须附加：[COMPLETENESS:数字]（0-100 整数，每收集到一项关键信息各 10 分：事故经过、事发时间、事发地点、损失金额、保单号、医院名称、诊断结果、已有材料、费用金额、社保情况）。');
+  parts.push('当已收集到足够信息（事故经过、保单信息、损失情况）可生成报告时，在末尾附加 [INFO_COMPLETE]。');
 
   return parts.join('\n');
 }
@@ -106,7 +116,7 @@ export function buildMessagesWithPolicyContext(
       content: policyContext,
     });
   } else {
-    // 无保单信息：也要注入基础 System Prompt，确保 [INFO_COMPLETE] 指令生效
+    // 无保单信息：注入基础 System Prompt
     const typeLabel: Record<string, string> = {
       health: '健康险/医疗险', life: '寿险', accident: '意外险',
       property: '财产险', liability: '责任险', travel: '旅行险', other: '保险'
@@ -114,7 +124,11 @@ export function buildMessagesWithPolicyContext(
     const label = typeLabel[insuranceType || 'other'] || '保险';
     result.push({
       role: 'system',
-      content: `你是一个专业的${label}理赔顾问。请通过追问收集用户的理赔信息，包括：事故经过、保单信息、损失情况。在每次回复末尾，必须附加一行：[COMPLETENESS:数字]，其中数字为 0-100 的整数，表示当前已收集到的理赔信息完整度。计算规则：每收集到一项关键信息（事故经过、事发时间、事发地点、损失金额、保单号、医院名称、诊断结果、已有材料、费用金额、社保情况）各占 10 分。当你已经收集到足够的信息可以生成理赔评估报告时，在回复末尾附加 [INFO_COMPLETE] 标记。`,
+      content: `你是专业的${label}理赔顾问。${REPLY_STYLE}
+
+请通过追问收集用户的理赔信息（事故经过、保单信息、损失情况）。
+在每次回复末尾，必须附加：[COMPLETENESS:数字]（0-100 整数，每收集到一项关键信息各 10 分：事故经过、事发时间、事发地点、损失金额、保单号、医院名称、诊断结果、已有材料、费用金额、社保情况）。
+当已收集到足够信息可生成报告时，在末尾附加 [INFO_COMPLETE]。`,
     });
   }
 
