@@ -51,6 +51,8 @@ import {
 } from "@/lib/api";
 import PolicyInfoModal from "@/components/PolicyInfoModal";
 import { saveSession, type SessionData } from "@/lib/sessionManager";
+import jsPDF from "jspdf"
+import { notoSansSCRegular } from "@/lib/pdfFont";
 
 // ── 险种标签映射 ──
 const TYPE_LABELS: Record<InsuranceType, string> = {
@@ -405,36 +407,141 @@ export default function Consult() {
   };
 
   // PDF 导出：使用 html2canvas + jsPDF 导出右侧面板内容
-  const handleExportReport = async () => {
-    if (!reportPanelRef.current) return;
-    toast.info("正在生成 PDF...");
+  const handleExportReport = () => {
+    if (!report) {
+      toast.info("当前还没有可导出的报告");
+      return;
+    }
+  
+    const doc = new jsPDF({
+      unit: "mm",
+      format: "a4",
+      orientation: "portrait",
+    });
+    doc.addFileToVFS("NotoSansSC-Regular.ttf", notoSansSCRegular);
+    doc.addFont("NotoSansSC-Regular.ttf", "NotoSansSC", "normal");
+    doc.addFont("NotoSansSC-Regular.ttf", "NotoSansSC", "bold");
+    doc.setFont("NotoSansSC");
+  
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const margin = 18;
+    const maxWidth = pageWidth - margin * 2;
+    let y = 20;
+  
+    const addPageIfNeeded = (height = 10) => {
+      if (y + height > 280) {
+        doc.addPage();
+        y = 20;
+      }
+    };
+  
+    const addText = (
+      text: string,
+      options?: {
+        size?: number;
+        bold?: boolean;
+        gap?: number;
+      }
+    ) => {
+      const size = options?.size ?? 11;
+      doc.setFontSize(size);
+      doc.setFont("NotoSansSC", options?.bold ? "bold" : "normal");
+  
+      const lines = doc.splitTextToSize(text || "", maxWidth);
+      const lineHeight = size * 0.45;
+  
+      addPageIfNeeded(lines.length * lineHeight + 4);
+  
+      doc.text(lines, margin, y);
+      y += lines.length * lineHeight + (options?.gap ?? 5);
+    };
+  
+    const addSectionTitle = (title: string) => {
+      y += 4;
+      addPageIfNeeded(14);
+      doc.setFontSize(15);
+      doc.setFont("NotoSansSC", "bold");
+      doc.text(title, margin, y);
+      y += 4;
+      doc.line(margin, y, pageWidth - margin, y);
+      y += 8;
+    };
+  
+    const addCard = (title: string, body: string) => {
+      const titleLines = doc.splitTextToSize(title || "", maxWidth - 8);
+      const bodyLines = doc.splitTextToSize(body || "", maxWidth - 8);
+      const cardHeight = 8 + titleLines.length * 5 + bodyLines.length * 5 + 6;
+  
+      addPageIfNeeded(cardHeight);
+  
+      doc.setDrawColor(220);
+      doc.roundedRect(margin, y, maxWidth, cardHeight, 2, 2);
+  
+      y += 7;
+      doc.setFontSize(11);
+      doc.setFont("NotoSansSC", "bold");
+      doc.text(titleLines, margin + 4, y);
+  
+      y += titleLines.length * 5 + 2;
+      doc.setFontSize(10);
+      doc.setFont("NotoSansSC", "normal");
+      doc.text(bodyLines, margin + 4, y);
+  
+      y += bodyLines.length * 5 + 8;
+    };
+  
     try {
-      const html2canvas = (await import("html2canvas")).default;
-      const jsPDF = (await import("jspdf")).jsPDF;
-      
-      const canvas = await html2canvas(reportPanelRef.current, {
-        backgroundColor: "#1C1C1E",
-        scale: 2,
-        useCORS: true,
-        logging: false,
+      addText("理赔准备报告", { size: 20, bold: true, gap: 3 });
+      addText("本报告用于整理理赔准备信息，不构成理赔结论。", {
+        size: 10,
+        gap: 8,
       });
-      
-      const imgData = canvas.toDataURL("image/png");
-      const pdf = new jsPDF({
-        orientation: "portrait",
-        unit: "mm",
-        format: "a4",
+  
+      addSectionTitle("一、当前情况整理");
+      addText(report.incidentSummary || "暂无明确案件摘要。");
+      addText(report.probabilityReason || "本报告不评估理赔概率。", {
+        size: 10,
+        gap: 4,
       });
-      
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-      
-      pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, pdfHeight);
-      pdf.save(`理赔评估报告_${new Date().toLocaleDateString("zh-CN").replace(/\//g, "-")}.pdf`);
-      toast.success("PDF 导出成功");
+  
+      addSectionTitle("二、待确认保障方向");
+      report.coverageAnalysis.forEach((item) => {
+        addCard(item.item, item.detail);
+      });
+  
+      addSectionTitle("三、建议准备材料");
+      report.requiredDocuments.forEach((docItem) => {
+        addCard(
+          `${docItem.name}${docItem.required ? "（建议准备）" : ""}`,
+          `${docItem.description}${docItem.tips ? `\n提示：${docItem.tips}` : ""}`
+        );
+      });
+  
+      addSectionTitle("四、后续流程建议");
+      report.claimProcess.forEach((step) => {
+        addCard(
+          `${step.step}. ${step.title}`,
+          `${step.description}${
+            step.estimatedTime ? `\n预计时间：${step.estimatedTime}` : ""
+          }`
+        );
+      });
+  
+      if (report.notes) {
+        addSectionTitle("五、备注");
+        addText(report.notes);
+      }
+  
+      addSectionTitle("免责声明");
+      addText(report.disclaimer || "最终结果以保险公司审核为准。", {
+        size: 10,
+      });
+  
+      doc.save(`理赔准备报告_${new Date().toISOString().slice(0, 10)}.pdf`);
+      toast.success("PDF 已导出");
     } catch (err) {
       console.error(err);
-      toast.error("PDF 导出失败，请重试");
+      toast.error("PDF 导出失败");
     }
   };
 
