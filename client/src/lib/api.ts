@@ -217,6 +217,8 @@ export async function sendChatMessage(req: ChatRequest): Promise<ChatResponse> {
       messages: messagesWithContext,
       temperature: 0.7,
       max_tokens: 2048,
+      // 禁用 reasoning 模式，避免 thinking token 占满导致 content 为空
+      thinking: { type: "disabled" },
     }),
   }).then((res: any) => {
     const rawMessage = res.choices?.[0]?.message?.content || "";
@@ -312,6 +314,7 @@ export async function generateClaimAssessment(
       ],
       temperature: 0.3,
       max_tokens: 3000,
+      thinking: { type: "disabled" },
     }),
   }).then((res: any) => {
     const content = res.choices?.[0]?.message?.content || "";
@@ -450,6 +453,7 @@ ${policyText.substring(0, 3000)}`;
           messages: [{ role: "user", content: parsePrompt }],
           temperature: 0.1,
           max_tokens: 800,
+          thinking: { type: "disabled" },
         }),
       });
       const parseContent = parseRes.choices?.[0]?.message?.content || "";
@@ -575,6 +579,7 @@ export async function createSession(
       ],
       temperature: 0.8,
       max_tokens: 256,
+      thinking: { type: "disabled" },
     }),
   }).then((res: any) => {
     const customMessage = res.choices?.[0]?.message?.content || getFallbackInitialMessage(insuranceType);
