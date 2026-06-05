@@ -84,7 +84,7 @@ async function verifyIsInsurancePolicy(pageImages: string[]): Promise<boolean> {
               ...imageContents,
               {
                 type: "text",
-                text: "这些是一份 PDF 文件的前几页。请判断它是否是一份保险公司发行的保险条款文件（包括重疾险、医疗险、寿险、意外险、财产险等任意类型的保险产品条款、保险单、投保须知等）。只需回答 YES 或 NO，不要解释。",
+                text: "这些是一份 PDF 文件的前几页。请仔细判断：这份文件是否是保险公司正式发行的保险条款文件？\n\n保险条款文件的特征：包含保险责任、除外责任、理赔条件、保险金额、等待期等保险专业术语；文件标题或封面通常包含“保险条款”、“保险单”、“投保须知”、“保险合同”等字样。\n\n以下文件不是保险条款，应回答 NO：工资单、薪资条、体检报告、医院病历、发票、收据、合同文本（非保险合同）、身份证明、成绩单、学历、个人简历、广告单页、外卖收据、财务报表等。\n\n只需回答 YES 或 NO，不要解释。",
               },
             ],
           },
@@ -95,20 +95,21 @@ async function verifyIsInsurancePolicy(pageImages: string[]): Promise<boolean> {
     });
 
     if (!response.ok) {
-      // 如果验证接口失败，默认放行（避免验证失败阻断正常上传）
-      console.warn("保险条款验证接口失败，默认放行");
-      return true;
+      // 验证接口失败时，抛出错误让上层处理（不默认放行）
+      console.warn("保险条款验证接口失败，status:", response.status);
+      throw new Error("验证服务暂时不可用，请稍后重试");
     }
 
     const data = await response.json();
     const answer = (data.choices?.[0]?.message?.content || "").trim().toUpperCase();
     console.log("保险条款验证结果:", answer);
-    // 包含 YES 则认为是保险条款；包含 NO 则拒绝；其他情况默认放行
-    if (answer.includes("NO")) return false;
-    return true;
-  } catch (err) {
-    console.warn("保险条款验证异常，默认放行:", err);
-    return true; // 验证失败时默认放行，避免阻断正常用户
+    // 严格模式：只有明确回答 YES 才通过，其他一律拒绝
+    return answer.startsWith("YES");
+  } catch (err: any) {
+    // 如果是我们自己抛出的验证服务错误，向上传递
+    if (err?.message?.includes("验证服务")) throw err;
+    console.warn("保险条款验证异常:", err);
+    throw new Error("文件验证失败，请检查网络连接后重试");
   }
 }
 
@@ -170,8 +171,16 @@ export default function PolicyUploadModal({
       const pageImages = await renderPDFPagesToBase64(file, 3, 1.0);
       setUploadProgress(25);
 
-      // 调用 AI 视觉模型验证文件类型
-      const isInsurancePolicy = await verifyIsInsurancePolicy(pageImages);
+      // 调用 AI 视觉模型验证文件类型（严格模式：验证失败或网络异常均拒绝）
+      let isInsurancePolicy = false;
+      try {
+        isInsurancePolicy = await verifyIsInsurancePolicy(pageImages);
+      } catch (verifyErr: any) {
+        setError(verifyErr?.message || "文件验证失败，请检查网络连接后重试");
+        setIsUploading(false);
+        setUploadProgress(0);
+        return;
+      }
       if (!isInsurancePolicy) {
         setError("您上传的文件似乎不是保险条款，请核对后重新上传。");
         setIsUploading(false);
