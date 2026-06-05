@@ -53,7 +53,6 @@ import PolicyInfoModal from "@/components/PolicyInfoModal";
 import { saveSession, type SessionData } from "@/lib/sessionManager";
 import jsPDF from "jspdf"
 import { notoSansSCRegular } from "@/lib/pdfFont";
-
 // ── 险种标签映射 ──
 const TYPE_LABELS: Record<InsuranceType, string> = {
   health: "健康险 / 医疗险",
@@ -127,7 +126,7 @@ function getProbabilityLabel(prob: number): string {
 
 export default function Consult() {
   const [location, setLocation] = useLocation();
-  
+
   // 从浏览器地址栏直接获取查询参数（最可靠的方式）
   const getInitialInsuranceType = (): InsuranceType => {
     if (typeof window !== 'undefined') {
@@ -164,7 +163,7 @@ export default function Consult() {
   const [probAnimated, setProbAnimated] = useState(false);
   const [clauseRelevance, setClauseRelevance] = useState<Map<number, any[]>>(new Map());
   const [completenessScore, setCompletenessScore] = useState<number>(0);
-  
+
   // 实时字段状态：Map<字段名, { status, note }>
   const [fieldStatuses, setFieldStatuses] = useState<Map<string, { status: "confirmed" | "pending"; note: string }>>(new Map());
   // 是否已有对话（用于控制右侧空白引导状态）
@@ -190,7 +189,7 @@ export default function Consult() {
     const init = async () => {
       try {
         setIsInitializing(true);
-        
+
         // 检查是否需要恢复历史会话
         const resumeSessionId = localStorage.getItem("resumeSessionId");
         if (resumeSessionId) {
@@ -207,7 +206,7 @@ export default function Consult() {
             return;
           }
         }
-        
+
         // 创建新会话
         const { sessionId: sid, initialMessage } = await createSession(insuranceType);
         setSessionId(sid);
@@ -242,13 +241,13 @@ export default function Consult() {
         // Bug 5 修复：将 api.ts 的 PolicyInfo 字段映射到 sessionManager 期望的字段名
         policyInfo: policyInfo
           ? {
-              policyNumber: policyInfo.policyNumber,
-              company: policyInfo.insurerName,
-              type: policyInfo.productName,
-              amount: policyInfo.coverageAmount !== undefined ? String(policyInfo.coverageAmount) : undefined,
-              validFrom: policyInfo.effectiveDate,
-              validTo: policyInfo.expiryDate,
-            }
+            policyNumber: policyInfo.policyNumber,
+            company: policyInfo.insurerName,
+            type: policyInfo.productName,
+            amount: policyInfo.coverageAmount !== undefined ? String(policyInfo.coverageAmount) : undefined,
+            validFrom: policyInfo.effectiveDate,
+            validTo: policyInfo.expiryDate,
+          }
           : undefined,
         messages: messages.map((m) => ({
           role: (m.role === "user" || m.role === "assistant" ? m.role : "user") as "user" | "assistant",
@@ -257,11 +256,11 @@ export default function Consult() {
         })),
         report: report
           ? {
-              probability: report.claimProbability,
-              coverageAnalysis: report.coverageAnalysis.map((item) => `${item.item}: ${item.detail}`),
-              requiredDocuments: report.requiredDocuments.map((doc) => `${doc.name}${doc.required ? " (必需)" : ""}`),
-              claimProcess: report.claimProcess.map((step) => `${step.step}. ${step.title}: ${step.description}`),
-            }
+            probability: report.claimProbability,
+            coverageAnalysis: report.coverageAnalysis.map((item) => `${item.item}: ${item.detail}`),
+            requiredDocuments: report.requiredDocuments.map((doc) => `${doc.name}${doc.required ? " (必需)" : ""}`),
+            claimProcess: report.claimProcess.map((step) => `${step.step}. ${step.title}: ${step.description}`),
+          }
           : undefined,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -298,7 +297,7 @@ export default function Consult() {
         timestamp: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, aiMsg]);
-      
+
       // Bug 6 修复：先 append AI 消息，再用 AI 消息的实际索引作为 key
       if (policyInfo && policyInfo.policyText) {
         const { searchPolicyClauses } = await import("@/lib/policyCache");
@@ -310,12 +309,12 @@ export default function Consult() {
           return next;
         });
       }
-      
+
       if (response.isComplete) setCanGenerateReport(true);
       if (response.completenessScore !== undefined) {
         setCompletenessScore(response.completenessScore);
       }
-      
+
       // 处理字段更新
       if (response.fieldUpdates && response.fieldUpdates.length > 0) {
         setFieldStatuses((prev) => {
@@ -325,7 +324,7 @@ export default function Consult() {
           });
           return next;
         });
-        
+
         // 如果有字段确认，自动触发报告生成/刷新
         const hasConfirmed = response.fieldUpdates.some((u: FieldUpdate) => u.status === "confirmed");
         if (hasConfirmed) {
@@ -406,13 +405,45 @@ export default function Consult() {
     });
   };
 
-  // PDF 导出：使用 html2canvas + jsPDF 导出右侧面板内容
+  /*PDF 导出：使用 html2canvas + jsPDF 导出右侧面板内容
+  const handleExportReport = async () => {
+    if (!reportPanelRef.current) return;
+    toast.info("正在生成 PDF...");
+    try {
+      const html2canvas = (await import("html2canvas-pro")).default;
+      const jsPDF = (await import("jspdf")).jsPDF;
+
+      const canvas = await html2canvas(reportPanelRef.current, {
+        backgroundColor: "#1C1C1E",
+        scale: 2,
+        useCORS: true,
+        logging: false,
+      });
+
+      const imgData = canvas.toDataURL("image/png");
+      const pdf = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: "a4",
+      });
+
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+
+      pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, pdfHeight);
+      pdf.save(`理赔评估报告_${new Date().toLocaleDateString("zh-CN").replace(/\//g, "-")}.pdf`);
+      toast.success("PDF 导出成功");
+    } catch (err) {
+      console.error(err);
+      toast.error("PDF 导出失败，请重试");
+    }
+  };*/
   const handleExportReport = () => {
     if (!report) {
       toast.info("当前还没有可导出的报告");
       return;
     }
-  
+
     const doc = new jsPDF({
       unit: "mm",
       format: "a4",
@@ -422,19 +453,19 @@ export default function Consult() {
     doc.addFont("NotoSansSC-Regular.ttf", "NotoSansSC", "normal");
     doc.addFont("NotoSansSC-Regular.ttf", "NotoSansSC", "bold");
     doc.setFont("NotoSansSC");
-  
+
     const pageWidth = doc.internal.pageSize.getWidth();
     const margin = 18;
     const maxWidth = pageWidth - margin * 2;
     let y = 20;
-  
+
     const addPageIfNeeded = (height = 10) => {
       if (y + height > 280) {
         doc.addPage();
         y = 20;
       }
     };
-  
+
     const addText = (
       text: string,
       options?: {
@@ -446,16 +477,16 @@ export default function Consult() {
       const size = options?.size ?? 11;
       doc.setFontSize(size);
       doc.setFont("NotoSansSC", options?.bold ? "bold" : "normal");
-  
+
       const lines = doc.splitTextToSize(text || "", maxWidth);
       const lineHeight = size * 0.45;
-  
+
       addPageIfNeeded(lines.length * lineHeight + 4);
-  
+
       doc.text(lines, margin, y);
       y += lines.length * lineHeight + (options?.gap ?? 5);
     };
-  
+
     const addSectionTitle = (title: string) => {
       y += 4;
       addPageIfNeeded(14);
@@ -466,49 +497,40 @@ export default function Consult() {
       doc.line(margin, y, pageWidth - margin, y);
       y += 8;
     };
-  
+
     const addCard = (title: string, body: string) => {
       const titleLines = doc.splitTextToSize(title || "", maxWidth - 8);
       const bodyLines = doc.splitTextToSize(body || "", maxWidth - 8);
       const cardHeight = 8 + titleLines.length * 5 + bodyLines.length * 5 + 6;
-  
+
       addPageIfNeeded(cardHeight);
-  
+
       doc.setDrawColor(220);
       doc.roundedRect(margin, y, maxWidth, cardHeight, 2, 2);
-  
+
       y += 7;
       doc.setFontSize(11);
       doc.setFont("NotoSansSC", "bold");
       doc.text(titleLines, margin + 4, y);
-  
+
       y += titleLines.length * 5 + 2;
       doc.setFontSize(10);
       doc.setFont("NotoSansSC", "normal");
       doc.text(bodyLines, margin + 4, y);
-  
+
       y += bodyLines.length * 5 + 8;
     };
-  
     try {
       addText("理赔准备报告", { size: 20, bold: true, gap: 3 });
       addText("本报告用于整理理赔准备信息，不构成理赔结论。", {
         size: 10,
         gap: 8,
       });
-  
-      addSectionTitle("一、当前情况整理");
-      addText(report.incidentSummary || "暂无明确案件摘要。");
-      addText(report.probabilityReason || "本报告不评估理赔概率。", {
-        size: 10,
-        gap: 4,
-      });
-  
       addSectionTitle("二、待确认保障方向");
       report.coverageAnalysis.forEach((item) => {
         addCard(item.item, item.detail);
       });
-  
+
       addSectionTitle("三、建议准备材料");
       report.requiredDocuments.forEach((docItem) => {
         addCard(
@@ -516,27 +538,26 @@ export default function Consult() {
           `${docItem.description}${docItem.tips ? `\n提示：${docItem.tips}` : ""}`
         );
       });
-  
+
       addSectionTitle("四、后续流程建议");
       report.claimProcess.forEach((step) => {
         addCard(
           `${step.step}. ${step.title}`,
-          `${step.description}${
-            step.estimatedTime ? `\n预计时间：${step.estimatedTime}` : ""
+          `${step.description}${step.estimatedTime ? `\n预计时间：${step.estimatedTime}` : ""
           }`
         );
       });
-  
+
       if (report.notes) {
         addSectionTitle("五、备注");
         addText(report.notes);
       }
-  
+
       addSectionTitle("免责声明");
       addText(report.disclaimer || "最终结果以保险公司审核为准。", {
         size: 10,
       });
-  
+
       doc.save(`理赔准备报告_${new Date().toISOString().slice(0, 10)}.pdf`);
       toast.success("PDF 已导出");
     } catch (err) {
@@ -657,9 +678,8 @@ export default function Consult() {
                 )}
                 <div className="flex-1 max-w-lg">
                   <div
-                    className={`px-4 py-2 rounded-lg ${
-                      msg.role === "user" ? "text-white" : "text-foreground"
-                    }`}
+                    className={`px-4 py-2 rounded-lg ${msg.role === "user" ? "text-white" : "text-foreground"
+                      }`}
                     style={{
                       backgroundColor:
                         msg.role === "user" ? "#F59E0B" : "rgba(255,255,255,0.05)",
