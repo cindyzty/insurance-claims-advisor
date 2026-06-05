@@ -1,15 +1,16 @@
 /**
  * Consult.tsx — 核心咨询页面
  * Design: 「法律文书」深色专业风
- * Layout: 左侧 60% 聊天区 + 右侧 40% 报告区（分栏布局）
+ * Layout: 左侧 60% 聊天区 + 右侧 40% 实时信息摘要区
  *
  * 功能模块:
  * 1. 左侧：AI 智能问答对话（收集理赔信息）
- * 2. 右侧：实时生成的理赔评估报告
- *    - 理赔可能性仪表盘
- *    - 保险范围分析
- *    - 所需材料清单
- *    - 理赔流程步骤
+ * 2. 右侧：实时信息摘要表格（根据 AI [FIELD:...] 标记动态更新）
+ *    - 空白引导状态（未开始对话时）
+ *    - 概览 Tab：当前情况整理 + 待确认保障方向清单
+ *    - 材料 Tab：所需材料清单
+ *    - 流程 Tab：理赔流程步骤
+ *    - 导出报告（PDF）按钮
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -43,6 +44,7 @@ import {
   type ChatMessage,
   type ClaimAssessmentReport,
   type PolicyInfo,
+  type FieldUpdate,
   sendChatMessage,
   generateClaimAssessment,
   createSession,
@@ -59,6 +61,52 @@ const TYPE_LABELS: Record<InsuranceType, string> = {
   liability: "责任险",
   travel: "旅行险",
   other: "其他险种",
+};
+
+// ── 各险种对应的信息字段 ──
+const INSURANCE_FIELDS: Record<InsuranceType, { name: string; hint: string }[]> = {
+  health: [
+    { name: "就医与诊疗记录", hint: "建议补充就诊医院名称，并保留病历、诊断证明和检查报告。" },
+    { name: "治疗与住院安排", hint: "建议补充是否住院、是否手术、后续治疗安排等信息。" },
+    { name: "医保/社保结算", hint: "建议确认本次就医是否会使用医保或社保结算。" },
+    { name: "费用与票据", hint: "建议补充已发生费用或预计费用，并保留发票、费用明细清单。" },
+  ],
+  life: [
+    { name: "身故证明", hint: "需提供医院出具的死亡证明或公安机关出具的死亡证明书。" },
+    { name: "受益人信息", hint: "需确认受益人姓名、身份证号及与被保险人关系。" },
+    { name: "保单有效性", hint: "需确认保单在身故时处于有效状态，保费已缴清。" },
+    { name: "等待期核查", hint: "需确认身故时间是否在保单等待期之外。" },
+  ],
+  accident: [
+    { name: "事故经过", hint: "需详细描述意外事故发生的时间、地点及经过。" },
+    { name: "就医记录", hint: "需提供就诊医院的病历、诊断证明及检查报告。" },
+    { name: "伤残鉴定", hint: "如涉及伤残，需提供专业机构出具的伤残鉴定报告。" },
+    { name: "费用与票据", hint: "需保留所有医疗费用发票及费用明细清单。" },
+  ],
+  property: [
+    { name: "事故经过", hint: "需详细描述财产损失事故的时间、地点及经过。" },
+    { name: "定损报告", hint: "需由保险公司或第三方机构出具财产损失定损报告。" },
+    { name: "修理费用", hint: "需提供修理费用清单及相关发票。" },
+    { name: "第三方信息", hint: "如涉及第三方，需提供对方身份信息及联系方式。" },
+  ],
+  liability: [
+    { name: "事故经过", hint: "需详细描述事故发生的时间、地点及经过。" },
+    { name: "第三方损失", hint: "需提供第三方损失证明及相关证据材料。" },
+    { name: "法律文件", hint: "如有诉讼或仲裁，需提供相关法律文件。" },
+    { name: "赔偿金额", hint: "需确认第三方要求的赔偿金额及依据。" },
+  ],
+  travel: [
+    { name: "行程证明", hint: "需提供机票、车票或其他行程证明文件。" },
+    { name: "事故经过", hint: "需详细描述旅行途中事故发生的时间、地点及经过。" },
+    { name: "就医记录", hint: "需提供就诊医院的病历、诊断证明及检查报告。" },
+    { name: "费用与票据", hint: "需保留所有相关费用发票及费用明细清单。" },
+  ],
+  other: [
+    { name: "事故经过", hint: "需详细描述事故发生的时间、地点及经过。" },
+    { name: "相关证明", hint: "需提供与理赔相关的证明文件。" },
+    { name: "损失情况", hint: "需详细说明损失情况及损失金额。" },
+    { name: "费用与票据", hint: "需保留所有相关费用发票及费用明细清单。" },
+  ],
 };
 
 function getProbabilityColor(prob: number): string {
@@ -114,9 +162,15 @@ export default function Consult() {
   const [probAnimated, setProbAnimated] = useState(false);
   const [clauseRelevance, setClauseRelevance] = useState<Map<number, any[]>>(new Map());
   const [completenessScore, setCompletenessScore] = useState<number>(0);
+  
+  // 实时字段状态：Map<字段名, { status, note }>
+  const [fieldStatuses, setFieldStatuses] = useState<Map<string, { status: "confirmed" | "pending"; note: string }>>(new Map());
+  // 是否已有对话（用于控制右侧空白引导状态）
+  const hasStartedChat = messages.some(m => m.role === "user");
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const typeDropdownRef = useRef<HTMLDivElement>(null);
+  const reportPanelRef = useRef<HTMLDivElement>(null);
 
   // Issue #4：点击页面其他地方时关闭险种下拉菜单
   useEffect(() => {
@@ -214,6 +268,11 @@ export default function Consult() {
     }
   }, [sessionId, messages, report, policyInfo, insuranceType]);
 
+  // 险种切换时重置字段状态
+  useEffect(() => {
+    setFieldStatuses(new Map());
+  }, [insuranceType]);
+
   const handleSend = useCallback(async () => {
     const content = inputValue.trim();
     if (!content || isLoading) return;
@@ -239,20 +298,47 @@ export default function Consult() {
       setMessages((prev) => [...prev, aiMsg]);
       
       // Bug 6 修复：先 append AI 消息，再用 AI 消息的实际索引作为 key
-      // AI 消息索引 = newMessages.length（用户消息后的数组长度，即 AI 消息将被 push 到的位置）
       if (policyInfo && policyInfo.policyText) {
         const { searchPolicyClauses } = await import("@/lib/policyCache");
         const relevantClauses = searchPolicyClauses(policyInfo.policyText, content, 3);
-        const aiMsgIndex = newMessages.length; // 等于 AI 消息在 messages 中的索引
+        const aiMsgIndex = newMessages.length;
         setClauseRelevance((prev) => {
           const next = new Map(prev);
           next.set(aiMsgIndex, relevantClauses);
           return next;
         });
       }
+      
       if (response.isComplete) setCanGenerateReport(true);
       if (response.completenessScore !== undefined) {
         setCompletenessScore(response.completenessScore);
+      }
+      
+      // 处理字段更新
+      if (response.fieldUpdates && response.fieldUpdates.length > 0) {
+        setFieldStatuses((prev) => {
+          const next = new Map(prev);
+          response.fieldUpdates!.forEach((update: FieldUpdate) => {
+            next.set(update.name, { status: update.status, note: update.note });
+          });
+          return next;
+        });
+        
+        // 如果有字段确认，自动触发报告生成/刷新
+        const hasConfirmed = response.fieldUpdates.some((u: FieldUpdate) => u.status === "confirmed");
+        if (hasConfirmed) {
+          // 异步生成报告，不阻塞对话
+          setTimeout(async () => {
+            try {
+              const updatedMessages = [...newMessages, aiMsg];
+              const result = await generateClaimAssessment(sessionId, updatedMessages, insuranceType, policyInfo);
+              setReport(result);
+              setProbAnimated(false);
+            } catch {
+              // 静默失败，不影响对话体验
+            }
+          }, 500);
+        }
       }
     } catch {
       toast.error("发送失败，请检查网络连接后重试");
@@ -268,27 +354,8 @@ export default function Consult() {
     }
   };
 
-  const handleGenerateReport = async () => {
-    setIsGeneratingReport(true);
-    try {
-      const result = await generateClaimAssessment(sessionId, messages, insuranceType, policyInfo);
-      setReport(result);
-      setProbAnimated(false);
-      setActiveReportTab("overview");
-      toast.success("理赔评估报告已生成");
-    } catch {
-      toast.error("报告生成失败，请稍后重试");
-    } finally {
-      setIsGeneratingReport(false);
-    }
-  };
-
   // Issue #4 修复：刷新报告——重新调用 AI 生成最新报告
   const handleRefreshReport = async () => {
-    if (!canGenerateReport && !report) {
-      toast.info("请先描述您的理赔情况，收集足够信息后再生成报告");
-      return;
-    }
     setIsGeneratingReport(true);
     try {
       const result = await generateClaimAssessment(sessionId, messages, insuranceType, policyInfo);
@@ -311,8 +378,8 @@ export default function Consult() {
     }
     setInsuranceType(newType);
     setShowTypeDropdown(false);
-    toast.info(`已切换为「${TYPE_LABELS[newType]}」，正在重新生成报告...`);
-    // 切换险种后自动重新生成报告（如果已有报告或已收集足够信息）
+    toast.info(`已切换为「${TYPE_LABELS[newType]}」`);
+    // 切换险种后如果已有报告，自动重新生成
     if (report || canGenerateReport) {
       setIsGeneratingReport(true);
       try {
@@ -337,8 +404,38 @@ export default function Consult() {
     });
   };
 
-  const handleExportReport = () => {
-    toast.info("导出功能需对接后端 PDF 生成接口");
+  // PDF 导出：使用 html2canvas + jsPDF 导出右侧面板内容
+  const handleExportReport = async () => {
+    if (!reportPanelRef.current) return;
+    toast.info("正在生成 PDF...");
+    try {
+      const html2canvas = (await import("html2canvas")).default;
+      const jsPDF = (await import("jspdf")).jsPDF;
+      
+      const canvas = await html2canvas(reportPanelRef.current, {
+        backgroundColor: "#1C1C1E",
+        scale: 2,
+        useCORS: true,
+        logging: false,
+      });
+      
+      const imgData = canvas.toDataURL("image/png");
+      const pdf = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: "a4",
+      });
+      
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+      
+      pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, pdfHeight);
+      pdf.save(`理赔评估报告_${new Date().toLocaleDateString("zh-CN").replace(/\//g, "-")}.pdf`);
+      toast.success("PDF 导出成功");
+    } catch (err) {
+      console.error(err);
+      toast.error("PDF 导出失败，请重试");
+    }
   };
 
   if (isInitializing) {
@@ -351,6 +448,9 @@ export default function Consult() {
       </div>
     );
   }
+
+  // 当前险种字段列表
+  const currentFields = INSURANCE_FIELDS[insuranceType] || INSURANCE_FIELDS.other;
 
   return (
     <div className="h-screen flex flex-col bg-background text-foreground overflow-hidden">
@@ -426,31 +526,6 @@ export default function Consult() {
             <FileText className="w-3.5 h-3.5" />
             {policyInfo ? "已上传保单" : "上传保单"}
           </Button>
-          {/* Issue #4 修复：刷新报告按鈕 */}
-          {(report || canGenerateReport) && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-xs gap-1.5 border-border"
-              onClick={handleRefreshReport}
-              disabled={isGeneratingReport}
-              title="按最新对话内容重新生成报告"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isGeneratingReport ? "animate-spin" : ""}`} />
-              刷新报告
-            </Button>
-          )}
-          {report && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-xs gap-1.5 border-border"
-              onClick={handleExportReport}
-            >
-              <Download className="w-3.5 h-3.5" />
-              导出报告
-            </Button>
-          )}
         </div>
       </header>
 
@@ -563,279 +638,354 @@ export default function Consult() {
           </div>
         </div>
 
-        {/* Right: Report */}
-        <div className="w-96 border-l border-border flex flex-col overflow-hidden" style={{ backgroundColor: "rgba(255,255,255,0.02)" }}>
-          {report ? (
+        {/* Right: Info Summary Panel */}
+        <div
+          ref={reportPanelRef}
+          data-print-panel
+          className="w-96 border-l border-border flex flex-col overflow-hidden"
+          style={{ backgroundColor: "rgba(255,255,255,0.02)" }}
+        >
+          {!hasStartedChat ? (
+            /* ── 空白引导状态 ── */
+            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+              <Shield className="w-12 h-12 mb-4 opacity-20" style={{ color: "#9CA3AF" }} />
+              <p className="text-sm font-medium text-muted-foreground mb-2">
+                请先描述您的情况，再生成报告
+              </p>
+              <p className="text-xs text-muted-foreground mb-1">
+                请先描述您的情况
+              </p>
+              <p className="text-xs text-muted-foreground">
+                您输入信息后，右侧会自动整理成理赔准备报告。
+              </p>
+            </div>
+          ) : (
             <>
-              {/* Report Tabs */}
-              <div className="border-b border-border px-4 py-3 flex gap-2 flex-shrink-0">
+              {/* ── 顶部操作栏 ── */}
+              <div
+                className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0"
+                style={{ backgroundColor: "rgba(255,255,255,0.02)" }}
+              >
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs gap-1.5 border-border"
+                  onClick={() => setShowPolicyModal(true)}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  {policyInfo ? "已上传保单" : "上传保单"}
+                </Button>
+                <div className="flex items-center gap-2">
+                  {(report || canGenerateReport) && (
+                    <button
+                      onClick={handleRefreshReport}
+                      disabled={isGeneratingReport}
+                      className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-border hover:border-amber-500/50 transition-colors"
+                      style={{ backgroundColor: "rgba(245,158,11,0.08)", color: "#F59E0B" }}
+                      title="按最新对话内容重新生成报告"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isGeneratingReport ? "animate-spin" : ""}`} />
+                    </button>
+                  )}
+                  <Button
+                    size="sm"
+                    className="text-xs gap-1.5"
+                    onClick={handleExportReport}
+                    style={{ backgroundColor: "#F59E0B", color: "#1C1C1E" }}
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    导出报告
+                  </Button>
+                </div>
+              </div>
+
+              {/* ── Tab 切换 ── */}
+              <div className="border-b border-border px-4 py-2 flex gap-1 flex-shrink-0">
                 <button
                   onClick={() => setActiveReportTab("overview")}
-                  className={`text-xs font-medium px-3 py-1 rounded transition-colors ${
-                    activeReportTab === "overview"
-                      ? "text-white"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
+                  className={`text-xs font-medium px-3 py-1.5 rounded transition-colors flex items-center gap-1`}
                   style={{
-                    backgroundColor:
-                      activeReportTab === "overview" ? "#F59E0B" : "transparent",
+                    backgroundColor: activeReportTab === "overview" ? "#F59E0B" : "transparent",
+                    color: activeReportTab === "overview" ? "#1C1C1E" : "var(--muted-foreground)",
                   }}
                 >
-                  <TrendingUp className="w-3 h-3 inline mr-1" />
+                  <TrendingUp className="w-3 h-3" />
                   概览
                 </button>
                 <button
                   onClick={() => setActiveReportTab("documents")}
-                  className={`text-xs font-medium px-3 py-1 rounded transition-colors ${
-                    activeReportTab === "documents"
-                      ? "text-white"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
+                  className={`text-xs font-medium px-3 py-1.5 rounded transition-colors flex items-center gap-1`}
                   style={{
-                    backgroundColor:
-                      activeReportTab === "documents" ? "#F59E0B" : "transparent",
+                    backgroundColor: activeReportTab === "documents" ? "#F59E0B" : "transparent",
+                    color: activeReportTab === "documents" ? "#1C1C1E" : "var(--muted-foreground)",
                   }}
                 >
-                  <ClipboardList className="w-3 h-3 inline mr-1" />
+                  <ClipboardList className="w-3 h-3" />
                   材料
                 </button>
                 <button
                   onClick={() => setActiveReportTab("process")}
-                  className={`text-xs font-medium px-3 py-1 rounded transition-colors ${
-                    activeReportTab === "process"
-                      ? "text-white"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
+                  className={`text-xs font-medium px-3 py-1.5 rounded transition-colors flex items-center gap-1`}
                   style={{
-                    backgroundColor:
-                      activeReportTab === "process" ? "#F59E0B" : "transparent",
+                    backgroundColor: activeReportTab === "process" ? "#F59E0B" : "transparent",
+                    color: activeReportTab === "process" ? "#1C1C1E" : "var(--muted-foreground)",
                   }}
                 >
-                  <Shield className="w-3 h-3 inline mr-1" />
+                  <Shield className="w-3 h-3" />
                   流程
                 </button>
               </div>
 
-              {/* Report Content */}
+              {/* ── Tab 内容 ── */}
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
+
+                {/* ── 概览 Tab ── */}
                 {activeReportTab === "overview" && (
                   <>
-                    {/* Probability */}
+                    {/* 当前情况整理 */}
                     <div>
-                      <p className="text-xs text-muted-foreground mb-2">理赔可能性</p>
+                      <p className="text-xs text-muted-foreground mb-2">当前情况整理</p>
+                      {report ? (
+                        <>
+                          <p className="text-sm font-semibold text-foreground mb-1">
+                            {report.incidentSummary}
+                          </p>
+                          <p className="text-xs text-muted-foreground leading-relaxed">
+                            本报告基于当前对话已整理的信息（完整度 {completenessScore}%），
+                            {completenessScore >= 60 ? "可评估理赔概率。" : "不评估理赔概率。"}
+                          </p>
+                          {/* 理赔可能性 */}
+                          {completenessScore >= 60 && (
+                            <div className="mt-3 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-muted-foreground">理赔可能性</span>
+                                <Badge
+                                  style={{
+                                    backgroundColor: `${getProbabilityColor(report.claimProbability)}20`,
+                                    color: getProbabilityColor(report.claimProbability),
+                                    border: `1px solid ${getProbabilityColor(report.claimProbability)}40`,
+                                  }}
+                                >
+                                  {probAnimated ? report.claimProbability : 0}% · {getProbabilityLabel(report.claimProbability)}
+                                </Badge>
+                              </div>
+                              <div
+                                className="w-full h-1.5 rounded-full overflow-hidden"
+                                style={{ backgroundColor: "rgba(255,255,255,0.08)" }}
+                              >
+                                <div
+                                  className="h-full rounded-full transition-all duration-700"
+                                  style={{
+                                    backgroundColor: getProbabilityColor(report.claimProbability),
+                                    width: probAnimated ? `${report.claimProbability}%` : "0%",
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-sm font-semibold text-foreground mb-1">
+                            用户正在补充理赔相关信息。
+                          </p>
+                          <p className="text-xs text-muted-foreground leading-relaxed">
+                            本报告基于当前对话已整理的信息（完整度 {completenessScore}%），不评估理赔概率。
+                          </p>
+                        </>
+                      )}
+                    </div>
+
+                    {/* 待确认保障方向 */}
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-2">待确认保障方向</p>
                       <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm font-semibold text-foreground">
-                            {probAnimated ? report.claimProbability : 0}%
-                          </span>
-                          <Badge
-                            style={{
-                              backgroundColor: `${getProbabilityColor(report.claimProbability)}20`,
-                              color: getProbabilityColor(report.claimProbability),
-                              border: `1px solid ${getProbabilityColor(report.claimProbability)}40`,
-                            }}
-                          >
-                            {getProbabilityLabel(report.claimProbability)}
-                          </Badge>
-                        </div>
-                        <div
-                          className="w-full h-2 rounded-full overflow-hidden"
-                          style={{ backgroundColor: "rgba(255,255,255,0.1)" }}
-                        >
-                          <div
-                            className="h-full rounded-full transition-all duration-500"
-                            style={{
-                              backgroundColor: getProbabilityColor(report.claimProbability),
-                              width: probAnimated ? `${report.claimProbability}%` : "0%",
-                            }}
-                          />
-                        </div>
+                        {currentFields.map((field) => {
+                          const status = fieldStatuses.get(field.name);
+                          const isConfirmed = status?.status === "confirmed";
+                          return (
+                            <div
+                              key={field.name}
+                              className="flex items-start gap-3 p-3 rounded-lg border transition-colors"
+                              style={{
+                                borderColor: isConfirmed ? "rgba(34,197,94,0.3)" : "rgba(255,255,255,0.08)",
+                                backgroundColor: isConfirmed ? "rgba(34,197,94,0.05)" : "rgba(255,255,255,0.02)",
+                              }}
+                            >
+                              <div className="flex-shrink-0 mt-0.5">
+                                {isConfirmed ? (
+                                  <CheckSquare className="w-4 h-4" style={{ color: "#22C55E" }} />
+                                ) : (
+                                  <Square className="w-4 h-4 text-muted-foreground" />
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-semibold text-foreground">{field.name}</p>
+                                <p className="text-xs text-muted-foreground leading-relaxed mt-0.5">
+                                  {status?.note || field.hint}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
 
-                    {/* Coverage Analysis */}
-                    <div>
-                      <p className="text-xs text-muted-foreground mb-2">保险范围分析</p>
+                    {/* 保险范围分析（有报告时显示） */}
+                    {report && report.coverageAnalysis.length > 0 && (
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-2">保险范围分析</p>
+                        <div className="space-y-2">
+                          {report.coverageAnalysis.map((item, i) => (
+                            <div
+                              key={i}
+                              className="flex items-start gap-2 p-2 rounded"
+                              style={{ backgroundColor: "rgba(255,255,255,0.03)" }}
+                            >
+                              {item.covered ? (
+                                <CheckSquare className="w-4 h-4 flex-shrink-0 mt-0.5" style={{ color: "#22C55E" }} />
+                              ) : (
+                                <Square className="w-4 h-4 flex-shrink-0 mt-0.5 text-muted-foreground" />
+                              )}
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-medium text-foreground">{item.item}</p>
+                                <p className="text-xs text-muted-foreground leading-relaxed">{item.detail}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 免责声明 */}
+                    <div
+                      className="p-3 rounded-lg border text-xs text-muted-foreground"
+                      style={{
+                        backgroundColor: "rgba(255,255,255,0.02)",
+                        borderColor: "rgba(255,255,255,0.08)",
+                      }}
+                    >
+                      <p className="font-semibold mb-1">免责声明</p>
+                      <p className="leading-relaxed">
+                        {report?.disclaimer || "本报告仅用于理赔信息整理和材料准备，不构成理赔结论。最终结果以保险公司审核为准。"}
+                      </p>
+                    </div>
+                  </>
+                )}
+
+                {/* ── 材料 Tab ── */}
+                {activeReportTab === "documents" && (
+                  <>
+                    {report && report.requiredDocuments.length > 0 ? (
                       <div className="space-y-2">
-                        {report.coverageAnalysis.map((item, i) => (
+                        {report.requiredDocuments.map((doc, i) => (
                           <div
                             key={i}
-                            className="flex items-start gap-2 p-2 rounded"
-                            style={{ backgroundColor: "rgba(255,255,255,0.03)" }}
+                            className="rounded-lg border overflow-hidden"
+                            style={{ borderColor: "rgba(255,255,255,0.1)" }}
                           >
-                            {item.covered ? (
-                              <CheckSquare className="w-4 h-4 flex-shrink-0 mt-0.5" style={{ color: "#22C55E" }} />
-                            ) : (
-                              <Square className="w-4 h-4 flex-shrink-0 mt-0.5 text-muted-foreground" />
+                            <button
+                              onClick={() => toggleDocExpand(i)}
+                              className="w-full flex items-center justify-between p-3 text-left hover:bg-accent/50 transition-colors"
+                              style={{ backgroundColor: "rgba(255,255,255,0.03)" }}
+                            >
+                              <div className="flex items-center gap-2 flex-1 min-w-0">
+                                <FileText className="w-4 h-4 flex-shrink-0" style={{ color: "#F59E0B" }} />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium text-foreground truncate">{doc.name}</p>
+                                  {doc.required && (
+                                    <Badge
+                                      className="text-xs mt-1"
+                                      style={{
+                                        backgroundColor: "rgba(239,68,68,0.1)",
+                                        color: "#EF4444",
+                                        border: "none",
+                                      }}
+                                    >
+                                      必需
+                                    </Badge>
+                                  )}
+                                </div>
+                              </div>
+                              {expandedDocs.has(i) ? (
+                                <ChevronUp className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                              ) : (
+                                <ChevronDown className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                              )}
+                            </button>
+                            {expandedDocs.has(i) && (
+                              <div
+                                className="px-3 pb-3 pt-0 text-xs text-muted-foreground space-y-1"
+                                style={{ backgroundColor: "rgba(255,255,255,0.02)" }}
+                              >
+                                <p>{doc.description}</p>
+                                {doc.tips && (
+                                  <div className="flex gap-2 mt-2 p-2 rounded" style={{ backgroundColor: "rgba(245,158,11,0.05)" }}>
+                                    <Info className="w-3 h-3 flex-shrink-0 mt-0.5" style={{ color: "#F59E0B" }} />
+                                    <span>{doc.tips}</span>
+                                  </div>
+                                )}
+                              </div>
                             )}
-                            <div className="flex-1 min-w-0">
-                              <p className="text-xs font-medium text-foreground">{item.item}</p>
-                              <p className="text-xs text-muted-foreground leading-relaxed">{item.detail}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center py-12 text-center">
+                        <ClipboardList className="w-10 h-10 mb-3 opacity-20" style={{ color: "#9CA3AF" }} />
+                        <p className="text-xs text-muted-foreground">
+                          继续描述您的理赔情况，<br />材料清单将自动生成
+                        </p>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* ── 流程 Tab ── */}
+                {activeReportTab === "process" && (
+                  <>
+                    {report && report.claimProcess.length > 0 ? (
+                      <div className="space-y-3">
+                        {report.claimProcess.map((step, i) => (
+                          <div key={i} className="flex gap-3">
+                            <div className="flex flex-col items-center">
+                              <div
+                                className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0"
+                                style={{ backgroundColor: "#F59E0B", color: "#1C1C1E" }}
+                              >
+                                {step.step}
+                              </div>
+                              {i < report.claimProcess.length - 1 && (
+                                <div
+                                  className="w-0.5 h-8 mt-1"
+                                  style={{ backgroundColor: "rgba(245,158,11,0.3)" }}
+                                />
+                              )}
+                            </div>
+                            <div className="flex-1 pt-0.5">
+                              <p className="text-sm font-medium text-foreground">{step.title}</p>
+                              <p className="text-xs text-muted-foreground leading-relaxed mt-1">{step.description}</p>
+                              {step.estimatedTime && (
+                                <p className="text-xs mt-1" style={{ color: "#F59E0B" }}>
+                                  预计 {step.estimatedTime}
+                                </p>
+                              )}
                             </div>
                           </div>
                         ))}
                       </div>
-                    </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center py-12 text-center">
+                        <Shield className="w-10 h-10 mb-3 opacity-20" style={{ color: "#9CA3AF" }} />
+                        <p className="text-xs text-muted-foreground">
+                          继续描述您的理赔情况，<br />理赔流程将自动生成
+                        </p>
+                      </div>
+                    )}
                   </>
                 )}
-
-                {activeReportTab === "documents" && (
-                  <div className="space-y-2">
-                    {report.requiredDocuments.map((doc, i) => (
-                      <div
-                        key={i}
-                        className="rounded-lg border overflow-hidden"
-                        style={{ borderColor: "rgba(255,255,255,0.1)" }}
-                      >
-                        <button
-                          onClick={() => toggleDocExpand(i)}
-                          className="w-full flex items-center justify-between p-3 text-left hover:bg-accent/50 transition-colors"
-                          style={{ backgroundColor: "rgba(255,255,255,0.03)" }}
-                        >
-                          <div className="flex items-center gap-2 flex-1 min-w-0">
-                            <FileText className="w-4 h-4 flex-shrink-0" style={{ color: "#F59E0B" }} />
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-foreground truncate">{doc.name}</p>
-                              {doc.required && (
-                                <Badge
-                                  className="text-xs mt-1"
-                                  style={{
-                                    backgroundColor: "rgba(239,68,68,0.1)",
-                                    color: "#EF4444",
-                                    border: "none",
-                                  }}
-                                >
-                                  必需
-                                </Badge>
-                              )}
-                            </div>
-                          </div>
-                          {expandedDocs.has(i) ? (
-                            <ChevronUp className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-                          ) : (
-                            <ChevronDown className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-                          )}
-                        </button>
-                        {expandedDocs.has(i) && (
-                          <div
-                            className="px-3 pb-3 pt-0 text-xs text-muted-foreground space-y-1"
-                            style={{ backgroundColor: "rgba(255,255,255,0.02)" }}
-                          >
-                            <p>{doc.description}</p>
-                            {doc.tips && (
-                              <div className="flex gap-2 mt-2 p-2 rounded" style={{ backgroundColor: "rgba(245,158,11,0.05)" }}>
-                                <Info className="w-3 h-3 flex-shrink-0 mt-0.5" style={{ color: "#F59E0B" }} />
-                                <span>{doc.tips}</span>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {activeReportTab === "process" && (
-                  <div className="space-y-3">
-                    {report.claimProcess.map((step, i) => (
-                      <div key={i} className="flex gap-3">
-                        <div className="flex flex-col items-center">
-                          <div
-                            className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0"
-                            style={{ backgroundColor: "#F59E0B", color: "#1C1C1E" }}
-                          >
-                            {step.step}
-                          </div>
-                          {i < report.claimProcess.length - 1 && (
-                            <div
-                              className="w-0.5 h-8 mt-1"
-                              style={{ backgroundColor: "rgba(245,158,11,0.3)" }}
-                            />
-                          )}
-                        </div>
-                        <div className="flex-1 pt-0.5">
-                          <p className="text-sm font-medium text-foreground">{step.title}</p>
-                          <p className="text-xs text-muted-foreground leading-relaxed mt-1">{step.description}</p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Disclaimer */}
-                <div
-                  className="p-3 rounded-lg border text-xs text-muted-foreground"
-                  style={{
-                    backgroundColor: "rgba(255,255,255,0.02)",
-                    borderColor: "rgba(255,255,255,0.1)",
-                  }}
-                >
-                  <p className="font-semibold mb-1">免责声明</p>
-                  <p className="leading-relaxed">{report.disclaimer}</p>
-                </div>
               </div>
             </>
-          ) : (
-            <div className="flex-1 flex flex-col items-center justify-center p-4 text-center">
-              <Shield className="w-12 h-12 text-muted-foreground mb-3 opacity-50" />
-              <p className="text-sm text-muted-foreground mb-4">
-                收集足够信息后，<br />
-                点击下方按鈕生成理赔评估报告
-              </p>
-              {/* Issue #2 修复：显示信息完整度进度条 */}
-              <div className="w-full max-w-xs mb-5">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs text-muted-foreground">信息完整度</span>
-                  <span
-                    className="text-xs font-semibold"
-                    style={{
-                      color: completenessScore >= 60 ? "#22C55E" : completenessScore >= 30 ? "#F59E0B" : "#9CA3AF",
-                    }}
-                  >
-                    {completenessScore}%
-                  </span>
-                </div>
-                <div
-                  className="w-full h-1.5 rounded-full overflow-hidden"
-                  style={{ backgroundColor: "rgba(255,255,255,0.08)" }}
-                >
-                  <div
-                    className="h-full rounded-full transition-all duration-500"
-                    style={{
-                      width: `${completenessScore}%`,
-                      backgroundColor: completenessScore >= 60 ? "#22C55E" : completenessScore >= 30 ? "#F59E0B" : "#6B7280",
-                    }}
-                  />
-                </div>
-                <p className="text-xs text-muted-foreground mt-1.5">
-                  {completenessScore === 0
-                    ? "请描述您的理赔情况"
-                    : completenessScore < 30
-                    ? "继续补充事故经过、时间、医院等信息"
-                    : completenessScore < 60
-                    ? "进展不错！还需补充费用、诊断等信息"
-                    : "信息已足够，可以生成报告"}
-                </p>
-              </div>
-              <Button
-                onClick={handleGenerateReport}
-                disabled={!canGenerateReport || isGeneratingReport}
-                className="text-sm font-semibold"
-                style={{ backgroundColor: "#F59E0B", color: "#1C1C1E" }}
-              >
-                {isGeneratingReport ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    生成中...
-                  </>
-                ) : (
-                  <>
-                    <TrendingUp className="w-4 h-4 mr-2" />
-                    生成评估报告
-                  </>
-                )}
-              </Button>
-            </div>
           )}
         </div>
       </div>
@@ -849,6 +999,23 @@ export default function Consult() {
         sessionId={sessionId}
         insuranceType={insuranceType}
       />
+
+      {/* ── 打印样式（PDF 导出用） ── */}
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          [data-print-panel], [data-print-panel] * { visibility: visible; }
+          [data-print-panel] {
+            position: fixed;
+            left: 0; top: 0;
+            width: 100%;
+            height: auto;
+            overflow: visible;
+            background: white;
+            color: black;
+          }
+        }
+      `}</style>
     </div>
   );
 }

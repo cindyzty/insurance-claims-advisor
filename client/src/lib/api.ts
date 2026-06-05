@@ -57,11 +57,18 @@ export interface ChatRequest {
 }
 
 /** 聊天接口响应 */
+export interface FieldUpdate {
+  name: string;
+  status: "confirmed" | "pending";
+  note: string;
+}
+
 export interface ChatResponse {
   message: string;           // AI 回复内容
   sessionId: string;         // 会话 ID
   isComplete: boolean;       // 是否已收集足够信息，可生成报告
   completenessScore?: number; // 信息完整度分数（0-100），由 AI 根据已收集字段数量计算
+  fieldUpdates?: FieldUpdate[]; // 提取到的字段更新信息
   suggestedQuestions?: string[]; // 可选的追问建议
 }
 
@@ -227,15 +234,31 @@ export async function sendChatMessage(req: ChatRequest): Promise<ChatResponse> {
     const completenessScore = completenessMatch
       ? Math.min(100, Math.max(0, parseInt(completenessMatch[1], 10)))
       : undefined;
+      
+    // 解析 [FIELD:字段名:状态:备注] 标记
+    const fieldUpdates: FieldUpdate[] = [];
+    const fieldRegex = /\[FIELD:([^:]+):([^:]+):([^\]]+)\]/g;
+    let match;
+    while ((match = fieldRegex.exec(rawMessage)) !== null) {
+      fieldUpdates.push({
+        name: match[1].trim(),
+        status: match[2].trim() as "confirmed" | "pending",
+        note: match[3].trim(),
+      });
+    }
+
     const message = rawMessage
       .replace(/\[INFO_COMPLETE\]/g, "")
       .replace(/\[COMPLETENESS:\d+\]/g, "")
+      .replace(/\[FIELD:[^\]]+\]/g, "")
       .trim();
+      
     return {
       message,
       sessionId: req.sessionId,
       isComplete,
       completenessScore,
+      fieldUpdates,
     };
   });
 }
@@ -569,8 +592,12 @@ export async function createSession(
       model: MODEL_NAME,
       messages: [
         {
+          role: "system",
+          content: `你是专业的保险理赔顾问。【回复规范】禁止客套话（不说“您好”、“感谢您的信任”等），直接进入正题，每次回复不超过 150 字。`,
+        },
+        {
           role: "user",
-          content: `你是一个专业的保险理赔顾问。为一个需要处理${insuranceType}理赔的客户提供一个亲切、专业的开场白。`,
+          content: `请用一句话作为开场白，引导用户描述他们的${insuranceType}理赔情况。直接问第一个最关键的问题。`,
         },
       ],
       temperature: 0.8,
