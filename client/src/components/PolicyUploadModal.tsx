@@ -61,8 +61,8 @@ async function verifyIsInsurancePolicy(pageImages: string[]): Promise<boolean> {
   try {
     const API_BASE_URL = "https://api.siliconflow.cn/v1";
     const API_KEY = "Bearer sk-ajrtbobovxlbpdinskwipfjhjkwqtztdddpgajgcbhpmdydt";
-    // 使用支持 vision 的轻量模型
-    const VISION_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct";
+    // 使用支持 vision 的模型（Qwen3-VL 系列）
+    const VISION_MODEL = "Qwen/Qwen3-VL-8B-Instruct";
 
     // 打印图片大小，方便调试（base64 字符数 / 1.33 ≈ 字节数）
     const totalBase64Chars = pageImages.reduce((sum, img) => sum + img.length, 0);
