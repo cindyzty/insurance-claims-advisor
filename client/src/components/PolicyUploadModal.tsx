@@ -64,6 +64,10 @@ async function verifyIsInsurancePolicy(pageImages: string[]): Promise<boolean> {
     // 使用支持 vision 的轻量模型
     const VISION_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct";
 
+    // 打印图片大小，方便调试（base64 字符数 / 1.33 ≈ 字节数）
+    const totalBase64Chars = pageImages.reduce((sum, img) => sum + img.length, 0);
+    console.log(`验证图片总大小: ~${(totalBase64Chars / 1024 / 1.33).toFixed(0)} KB, 页数: ${pageImages.length}`);
+
     const imageContents = pageImages.map((img) => ({
       type: "image_url" as const,
       image_url: { url: img },
@@ -96,8 +100,10 @@ async function verifyIsInsurancePolicy(pageImages: string[]): Promise<boolean> {
 
     if (!response.ok) {
       // 验证接口失败时，抛出错误让上层处理（不默认放行）
-      console.warn("保险条款验证接口失败，status:", response.status);
-      throw new Error("验证服务暂时不可用，请稍后重试");
+      let errBody = "";
+      try { errBody = await response.text(); } catch { /* ignore */ }
+      console.warn("保险条款验证接口失败，status:", response.status, "返回内容:", errBody.substring(0, 200));
+      throw new Error(`验证服务失败 (HTTP ${response.status})，请稍后重试`);
     }
 
     const data = await response.json();
@@ -168,7 +174,17 @@ export default function PolicyUploadModal({
       const { uploadPolicyPDF } = await import("@/lib/api");
 
       setUploadProgress(10);
-      const pageImages = await renderPDFPagesToBase64(file, 3, 1.0);
+
+      // 尝试渲染前 3 页为图片，如果渲染失败（如文件不是 PDF）直接拒绝
+      let pageImages: string[] = [];
+      try {
+        pageImages = await renderPDFPagesToBase64(file, 1, 0.5);
+      } catch (renderErr: any) {
+        setError("无法读取文件，请确保上传的是有效的 PDF 文件");
+        setIsUploading(false);
+        setUploadProgress(0);
+        return;
+      }
       setUploadProgress(25);
 
       // 调用 AI 视觉模型验证文件类型（严格模式：验证失败或网络异常均拒绝）
@@ -176,7 +192,8 @@ export default function PolicyUploadModal({
       try {
         isInsurancePolicy = await verifyIsInsurancePolicy(pageImages);
       } catch (verifyErr: any) {
-        setError(verifyErr?.message || "文件验证失败，请检查网络连接后重试");
+        // 区分验证服务错误和其他错误
+        setError(verifyErr?.message || "文件验证失败，请重试");
         setIsUploading(false);
         setUploadProgress(0);
         return;
