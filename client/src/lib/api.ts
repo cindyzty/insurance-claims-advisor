@@ -14,6 +14,13 @@
 const API_BASE_URL = "https://api.siliconflow.cn/v1";
 const MODEL_NAME = "nex-agi/Nex-N2-Pro";
 
+/** 对话输出 token 上限（原 2048，适当提高避免长标记序列被截断） */
+const CHAT_MAX_TOKENS = 4096;
+/** 报告生成输出 token 上限 */
+const REPORT_MAX_TOKENS = 4096;
+/** 送入模型的最近消息条数（含首条开场白），避免超长对话撑满上下文 */
+const MAX_CHAT_HISTORY_MESSAGES = 24;
+
 // ============================================================
 // TODO: 如需 API Key 认证，在此填写请求头配置
 // 示例: { "Authorization": "Bearer YOUR_TOKEN" }
@@ -148,9 +155,36 @@ export interface CoverageQueryResponse {
   generalInfo: string;
 }
 
+/** 报告生成选项 */
+export interface GenerateReportOptions {
+  forceRefresh?: boolean; // true = 跳过缓存（手动刷新 / 切换险种）
+}
+
 // ============================================================
 // 工具函数
 // ============================================================
+
+/** 保留开场白 + 最近 N 条消息，控制输入长度 */
+function truncateChatHistory(messages: ChatMessage[]): ChatMessage[] {
+  if (messages.length <= MAX_CHAT_HISTORY_MESSAGES) return messages;
+  const [first, ...rest] = messages;
+  const recent = rest.slice(-(MAX_CHAT_HISTORY_MESSAGES - 1));
+  return [first, ...recent];
+}
+
+/** 剥离标记后若正文为空，用字段备注或默认文案兜底 */
+function buildFallbackChatMessage(
+  fieldUpdates: FieldUpdate[],
+  completenessScore?: number
+): string {
+  if (fieldUpdates.length > 0) {
+    return fieldUpdates.map((u) => `${u.name}：${u.note}`).join("；");
+  }
+  if (completenessScore !== undefined) {
+    return `信息完整度 ${completenessScore}%，请继续补充理赔相关信息。`;
+  }
+  return "抱歉，本次回复异常，请重新发送或稍后重试。";
+}
 
 async function request<T>(
   endpoint: string,
@@ -209,24 +243,32 @@ async function request<T>(
  */
 export async function sendChatMessage(req: ChatRequest): Promise<ChatResponse> {
   const { buildMessagesWithPolicyContext } = await import("./policyContextBuilder");
-  
+
+  const truncatedMessages = truncateChatHistory(req.messages);
+
   // 构建包含保单信息的消息列表
   const messagesWithContext = buildMessagesWithPolicyContext(
-    req.messages,
+    truncatedMessages,
     req.policyInfo,
     req.insuranceType
   );
-  
+
   return request<any>("/chat/completions", {
     method: "POST",
     body: JSON.stringify({
       model: MODEL_NAME,
       messages: messagesWithContext,
       temperature: 0.7,
-      max_tokens: 2048,
+      max_tokens: CHAT_MAX_TOKENS,
     }),
   }).then((res: any) => {
     const rawMessage = res.choices?.[0]?.message?.content || "";
+    const finishReason = res.choices?.[0]?.finish_reason;
+    if (!rawMessage.trim()) {
+      console.warn("Chat API 返回空内容, finish_reason:", finishReason);
+    } else if (finishReason === "length") {
+      console.warn("Chat 回复因 max_tokens 被截断, 当前上限:", CHAT_MAX_TOKENS);
+    }
     // Bug 2 修复：通过 AI 在回复末尾附加 [INFO_COMPLETE] 标记来判断信息是否充足
     const isComplete = rawMessage.includes("[INFO_COMPLETE]");
     // Issue #2 修复：解析 [COMPLETENESS:N] 标记，获取信息完整度分数
@@ -234,7 +276,7 @@ export async function sendChatMessage(req: ChatRequest): Promise<ChatResponse> {
     const completenessScore = completenessMatch
       ? Math.min(100, Math.max(0, parseInt(completenessMatch[1], 10)))
       : undefined;
-      
+
     // 解析 [FIELD:字段名:状态:备注] 标记
     const fieldUpdates: FieldUpdate[] = [];
     const fieldRegex = /\[FIELD:([^:]+):([^:]+):([^\]]+)\]/g;
@@ -247,12 +289,16 @@ export async function sendChatMessage(req: ChatRequest): Promise<ChatResponse> {
       });
     }
 
-    const message = rawMessage
+    let message = rawMessage
       .replace(/\[INFO_COMPLETE\]/g, "")
       .replace(/\[COMPLETENESS:\d+\]/g, "")
       .replace(/\[FIELD:[^\]]+\]/g, "")
       .trim();
-      
+
+    if (!message) {
+      message = buildFallbackChatMessage(fieldUpdates, completenessScore);
+    }
+
     return {
       message,
       sessionId: req.sessionId,
@@ -281,8 +327,17 @@ export async function generateClaimAssessment(
   sessionId: string,
   messages: ChatMessage[],
   insuranceType: InsuranceType,
-  policyInfo?: PolicyInfo
+  policyInfo?: PolicyInfo,
+  options?: GenerateReportOptions
 ): Promise<ClaimAssessmentReport> {
+  const { buildReportCacheKey, getCachedReport, setCachedReport } = await import("./reportCache");
+  const cacheKey = buildReportCacheKey(sessionId, messages, insuranceType, policyInfo);
+
+  if (!options?.forceRefresh) {
+    const cached = getCachedReport(cacheKey);
+    if (cached) return cached;
+  }
+
   // Bug 1 修复：构建详细的 System Prompt，要求 AI 返回符合 ClaimAssessmentReport 结构的 JSON
   // 不把完整 policyText 注入，改为只提取最相关的条款片段，避免 token 超限
   let relevantClausesText = "";
@@ -298,6 +353,8 @@ export async function generateClaimAssessment(
   const policyContext = policyInfo
     ? `\n\n用户保单信息：产品名称=${policyInfo.productName || "未知"}，保险公司=${policyInfo.insurerName || "未知"}，保额=${policyInfo.coverageAmount ? policyInfo.coverageAmount + "元" : "未知"}，生效日=${policyInfo.effectiveDate || "未知"}，到期日=${policyInfo.expiryDate || "未知"}${relevantClausesText}`
     : "";
+
+  const truncatedMessages = truncateChatHistory(messages);
 
   const systemPrompt = `你是一个专业的保险理赔顾问。请基于用户提供的对话内容，生成一份详细的理赔评估报告。${policyContext}
 
@@ -331,14 +388,14 @@ export async function generateClaimAssessment(
       model: MODEL_NAME,
       messages: [
         { role: "system", content: systemPrompt },
-        ...messages.filter((m) => m.role === "user" || m.role === "assistant"),
+        ...truncatedMessages.filter((m) => m.role === "user" || m.role === "assistant"),
       ],
       temperature: 0.3,
-      max_tokens: 3000,
+      max_tokens: REPORT_MAX_TOKENS,
     }),
   }).then((res: any) => {
     const content = res.choices?.[0]?.message?.content || "";
-    
+
     // 尝试解析 AI 返回的 JSON
     let parsed: any = null;
     try {
@@ -358,7 +415,7 @@ export async function generateClaimAssessment(
 
     if (parsed && typeof parsed.claimProbability === "number") {
       // 成功解析 AI 返回的结构化数据
-      return {
+      const report = {
         sessionId,
         insuranceType,
         incidentSummary: parsed.incidentSummary || content.substring(0, 200),
@@ -373,6 +430,9 @@ export async function generateClaimAssessment(
         notes: parsed.notes,
         disclaimer: parsed.disclaimer || "本报告仅供参考，不构成任何法律或保险专业意见。最终理赔结果以保险公司审核决定为准。",
       } as ClaimAssessmentReport;
+
+      setCachedReport(cacheKey, report);
+      return report;
     }
 
     // 解析失败时抛出错误，让上层展示错误提示
@@ -436,10 +496,10 @@ export async function uploadPolicyPDF(
 }> {
   const { extractTextFromPDF } = await import("./pdfExtractor");
   const { isPolicyCached, cachePolicy } = await import("./policyCache");
-  
+
   try {
     const policyText = await extractTextFromPDF(file);
-    
+
     const cached = isPolicyCached(policyText);
     if (cached) {
       console.log("条款已缓存，使用缓存数据");
@@ -450,7 +510,7 @@ export async function uploadPolicyPDF(
         policyText: cached.policyText,
       };
     }
-    
+
     // 用 AI 真实解析 PDF 内容，提取保单摘要信息
     const policyId = `policy_${Date.now()}`;
     let summary: PolicySummary;
@@ -508,7 +568,7 @@ ${policyText.substring(0, 3000)}`;
       fileName: file.name,
       policyText,
     };
-    
+
     // Bug 3 修复：使用 simpleHash 计算 policyText 的哈希值，确保缓存命中逻辑正常工作
     const computeHash = (text: string): string => {
       let hash = 0;
@@ -528,7 +588,7 @@ ${policyText.substring(0, 3000)}`;
       uploadedAt: new Date().toISOString(),
       hash: computeHash(response.policyText),
     });
-    
+
     return response;
   } catch (error) {
     console.error("PDF 上传失败:", error);
@@ -585,7 +645,7 @@ export async function createSession(
   insuranceType: InsuranceType
 ): Promise<{ sessionId: string; initialMessage: string }> {
   const sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  
+
   return request<any>("/chat/completions", {
     method: "POST",
     body: JSON.stringify({
