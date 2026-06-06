@@ -172,6 +172,7 @@ export default function Consult() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const typeDropdownRef = useRef<HTMLDivElement>(null);
   const reportPanelRef = useRef<HTMLDivElement>(null);
+  const reportRequestVersionRef = useRef(0);
 
   // Issue #4：点击页面其他地方时关闭险种下拉菜单
   useEffect(() => {
@@ -329,10 +330,12 @@ export default function Consult() {
         const hasConfirmed = response.fieldUpdates.some((u: FieldUpdate) => u.status === "confirmed");
         if (hasConfirmed) {
           // 异步生成报告，不阻塞对话
+          const requestVersion = ++reportRequestVersionRef.current;
           setTimeout(async () => {
             try {
               const updatedMessages = [...newMessages, aiMsg];
               const result = await generateClaimAssessment(sessionId, updatedMessages, insuranceType, policyInfo);
+              if (requestVersion !== reportRequestVersionRef.current) return;
               setReport(result);
               setProbAnimated(false);
             } catch {
@@ -358,8 +361,10 @@ export default function Consult() {
   // Issue #4 修复：刷新报告——重新调用 AI 生成最新报告
   const handleRefreshReport = async () => {
     setIsGeneratingReport(true);
+    const requestVersion = ++reportRequestVersionRef.current;
     try {
       const result = await generateClaimAssessment(sessionId, messages, insuranceType, policyInfo);
+      if (requestVersion !== reportRequestVersionRef.current) return;
       setReport(result);
       setProbAnimated(false);
       setActiveReportTab("overview");
@@ -371,29 +376,30 @@ export default function Consult() {
     }
   };
 
-  // Issue #4 修复：切换险种类型，并自动重新生成报告
+  // 切换险种类型时开启新的咨询上下文，避免旧报告继续显示
   const handleChangeInsuranceType = async (newType: InsuranceType) => {
     if (newType === insuranceType) {
       setShowTypeDropdown(false);
       return;
     }
+
+    const previousSessionId = sessionId;
+    reportRequestVersionRef.current += 1;
     setInsuranceType(newType);
     setShowTypeDropdown(false);
+    setIsGeneratingReport(false);
+    setReport(null);
+    setCanGenerateReport(false);
+    setCompletenessScore(0);
+    setProbAnimated(false);
+    setFieldStatuses(new Map());
+    setClauseRelevance(new Map());
+    setActiveReportTab("overview");
     toast.info(`已切换为「${TYPE_LABELS[newType]}」`);
-    // 切换险种后如果已有报告，自动重新生成
-    if (report || canGenerateReport) {
-      setIsGeneratingReport(true);
-      try {
-        const result = await generateClaimAssessment(sessionId, messages, newType, policyInfo);
-        setReport(result);
-        setProbAnimated(false);
-        setActiveReportTab("overview");
-        toast.success(`已按「${TYPE_LABELS[newType]}」重新生成报告`);
-      } catch {
-        toast.error("报告重新生成失败，请稍后重试");
-      } finally {
-        setIsGeneratingReport(false);
-      }
+
+    if (previousSessionId) {
+      const { clearReportCache } = await import("@/lib/reportCache");
+      clearReportCache(previousSessionId);
     }
   };
 
