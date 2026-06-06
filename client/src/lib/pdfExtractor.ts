@@ -69,7 +69,7 @@ export async function renderPDFPagesToBase64(
         canvas.height = viewport.height;
         const ctx = canvas.getContext("2d")!;
 
-        await page.render({ canvasContext: ctx, viewport }).promise;
+        await page.render({ canvas, canvasContext: ctx, viewport }).promise;
 
         // 转为 base64（JPEG 压缩，质量 0.7，减小体积）
         return canvas.toDataURL("image/jpeg", 0.7);
