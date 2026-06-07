@@ -70,15 +70,15 @@ Main features include:
 
 ## Sample 
 ### Health Insurance
-<img width="2251" height="1257" alt="image" src="https://github.com/user-attachments/assets/5d7d8fb7-8fba-4615-acf4-562d2f8ae670" />
+<img width="80%" height="1257" alt="image" src="https://github.com/user-attachments/assets/5d7d8fb7-8fba-4615-acf4-562d2f8ae670" />
 
 ### Car Insurance
-<img width="2247" height="1204" alt="image" src="https://github.com/user-attachments/assets/d2b1ac4a-da9d-4391-b705-2342ef821f38" />
+<img width="80%" height="1204" alt="image" src="https://github.com/user-attachments/assets/d2b1ac4a-da9d-4391-b705-2342ef821f38" />
 
 ### Travel Insurance
-<img width="2247" height="1253" alt="image" src="https://github.com/user-attachments/assets/87f46782-49ec-48a5-8597-f1014f76be1e" />
+<img width="80%" height="1253" alt="image" src="https://github.com/user-attachments/assets/87f46782-49ec-48a5-8597-f1014f76be1e" />
 
 ### Dialogue When User Uploads Proper Insurance Document
-<img width="2518" height="501" alt="d28cdbe660dbfb6e1bc16491fd4811bb" src="https://github.com/user-attachments/assets/4a235933-a7d1-4f7b-9367-cc25dc592f3a" />
+<img width="80%" height="501" alt="d28cdbe660dbfb6e1bc16491fd4811bb" src="https://github.com/user-attachments/assets/4a235933-a7d1-4f7b-9367-cc25dc592f3a" />
 
 
