@@ -52,6 +52,75 @@ interface PolicyUploadModalProps {
   insuranceType?: string;
 }
 
+/**
+ * Issue #3-A：调用 AI 视觉模型，验证上传的 PDF 是否为保险条款文件
+ * @param pageImages 前 3 页的 base64 图片数组（data URL 格式）
+ * @returns true 表示是保险条款，false 表示不是
+ */
+async function verifyIsInsurancePolicy(pageImages: string[]): Promise<boolean> {
+  try {
+    // 复用项目统一的 API 配置（nex-agi/Nex-N2-Pro 支持 image_url）
+    const API_BASE_URL = "https://api.siliconflow.cn/v1";
+    const API_KEY = "Bearer sk-ajrtbobovxlbpdinskwipfjhjkwqtztdddpgajgcbhpmdydt";
+    const VISION_MODEL = "nex-agi/Nex-N2-Pro";
+
+    // 打印图片大小，方便调试（base64 字符数 / 1.33 ≈ 字节数）
+    const totalBase64Chars = pageImages.reduce((sum, img) => sum + img.length, 0);
+    console.log(`验证图片总大小: ~${(totalBase64Chars / 1024 / 1.33).toFixed(0)} KB, 页数: ${pageImages.length}`);
+
+    const imageContents = pageImages.map((img) => ({
+      type: "image_url" as const,
+      image_url: { url: img },
+    }));
+
+    const response = await fetch(`${API_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: API_KEY,
+      },
+      body: JSON.stringify({
+        model: VISION_MODEL,
+        messages: [
+          {
+            role: "user",
+            content: [
+              ...imageContents,
+              {
+                type: "text",
+                text: "这些是一份 PDF 文件的前几页。请仔细判断：这份文件是否是保险公司正式发行的保险条款文件？\n\n保险条款文件的特征：包含保险责任、除外责任、理赔条件、保险金额、等待期等保险专业术语；文件标题或封面通常包含“保险条款”、“保险单”、“投保须知”、“保险合同”等字样。\n\n以下文件不是保险条款，应回答 NO：工资单、薪资条、体检报告、医院病历、发票、收据、合同文本（非保险合同）、身份证明、成绩单、学历、个人简历、广告单页、外卖收据、财务报表等。\n\n只需回答 YES 或 NO，不要解释。",
+              },
+            ],
+          },
+        ],
+        max_tokens: 100,
+        temperature: 0,
+        // 禁用 thinking 模式，避免 reasoning token 占满导致 content 为空
+        thinking: { type: "disabled" },
+      }),
+    });
+
+    if (!response.ok) {
+      // 验证接口失败时，抛出错误让上层处理（不默认放行）
+      let errBody = "";
+      try { errBody = await response.text(); } catch { /* ignore */ }
+      console.warn("保险条款验证接口失败，status:", response.status, "返回内容:", errBody.substring(0, 200));
+      throw new Error(`验证服务失败 (HTTP ${response.status})，请稍后重试`);
+    }
+
+    const data = await response.json();
+    const answer = (data.choices?.[0]?.message?.content || "").trim().toUpperCase();
+    console.log("保险条款验证结果:", answer);
+    // 严格模式：只有明确回答 YES 才通过，其他一律拒绝
+    return answer.startsWith("YES");
+  } catch (err: any) {
+    // 如果是我们自己抛出的验证服务错误，向上传递
+    if (err?.message?.includes("验证服务")) throw err;
+    console.warn("保险条款验证异常:", err);
+    throw new Error("文件验证失败，请检查网络连接后重试");
+  }
+}
+
 export default function PolicyUploadModal({
   open,
   onClose,
@@ -64,6 +133,8 @@ export default function PolicyUploadModal({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // Issue #3-A：上传阶段状态，用于在 UI 中显示当前进行到哪一步
+  const [uploadStatus, setUploadStatus] = useState<"validating" | "extracting" | "analyzing" | "done">("validating");
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(["highlights"]));
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -88,11 +159,7 @@ export default function PolicyUploadModal({
   const handleFileSelect = async (file: File) => {
     setError(null);
 
-    // 验证文件类型和大小
-    if (file.type !== "application/pdf") {
-      setError("请选择 PDF 格式的文件");
-      return;
-    }
+    // 验证文件大小（文件类型由 AI 视觉验证处理，不在此强制检查 MIME type）
     if (file.size > 10 * 1024 * 1024) {
       setError("文件大小不能超过 10MB");
       return;
@@ -101,24 +168,66 @@ export default function PolicyUploadModal({
     // 模拟上传和处理
     setIsUploading(true);
     setUploadProgress(0);
+    setUploadStatus("validating");
 
     try {
-      // 模拟上传进度
-      const progressInterval = setInterval(() => {
-        setUploadProgress((prev) => {
-          if (prev >= 90) {
-            clearInterval(progressInterval);
-            return prev;
-          }
-          return prev + Math.random() * 30;
-        });
-      }, 300);
-
-      const { extractTextFromPDF } = await import("@/lib/pdfExtractor");
+      // Issue #3-A：先渲染前 3 页为图片，发给 AI 验证是否为保险条款文件
+      const { renderPDFPagesToBase64, extractTextFromPDF } = await import("@/lib/pdfExtractor");
       const { uploadPolicyPDF } = await import("@/lib/api");
 
+      setUploadProgress(10);
+
+      // 尝试渲染前 3 页为图片，如果渲染失败（如文件不是 PDF）直接拒绝
+      let pageImages: string[] = [];
+      try {
+        pageImages = await renderPDFPagesToBase64(file, 1, 0.5);
+      } catch (renderErr: any) {
+        setError("无法读取文件，请确保上传的是有效的 PDF 文件");
+        setIsUploading(false);
+        setUploadProgress(0);
+        return;
+      }
+      setUploadProgress(25);
+
+      // 调用 AI 视觉模型验证文件类型（严格模式：验证失败或网络异常均拒绝）
+      let isInsurancePolicy = false;
+      try {
+        isInsurancePolicy = await verifyIsInsurancePolicy(pageImages);
+      } catch (verifyErr: any) {
+        // 区分验证服务错误和其他错误
+        setError(verifyErr?.message || "文件验证失败，请重试");
+        setIsUploading(false);
+        setUploadProgress(0);
+        return;
+      }
+      if (!isInsurancePolicy) {
+        setError("您上传的文件似乎不是保险条款，请核对后重新上传。");
+        setIsUploading(false);
+        setUploadProgress(0);
+        return;
+      }
+
+      // 验证通过，开始提取全文
+      setUploadStatus("extracting");
+      setUploadProgress(30);
+
+      // Issue #1 修复：进度条平滑递增，每次最多增加 10%，且严格限制在 0-90 之间
+      const progressInterval = setInterval(() => {
+        setUploadProgress((prev) => {
+          if (prev >= 88) {
+            clearInterval(progressInterval);
+            return 88;
+          }
+          const increment = Math.random() * 8 + 2; // 每次增加 2-10%
+          return Math.min(prev + increment, 88);
+        });
+      }, 400);
+
+      // Issue #3-B：并行提取全文（已在 pdfExtractor.ts 中改为 Promise.all）
       const policyText = await extractTextFromPDF(file);
       console.log("PDF 文本提取成功，长度:", policyText.length);
+
+      setUploadStatus("analyzing");
 
       // Bug 4 修复：优先使用父组件通过 props 传入的 sessionId 和 insuranceType
       const sessionId = propSessionId || `session_${Date.now()}`;
@@ -128,6 +237,7 @@ export default function PolicyUploadModal({
 
       clearInterval(progressInterval);
       setUploadProgress(100);
+      setUploadStatus("done");
 
       const uploadedPolicy: UploadedPolicy = {
         policyId: response.policyId,
@@ -370,9 +480,17 @@ export default function PolicyUploadModal({
               <Loader2 className="w-8 h-8 animate-spin" style={{ color: "#F59E0B" }} />
             </div>
             <div className="text-center">
-              <div className="text-sm font-medium text-foreground mb-2">正在处理条款...</div>
+              <div className="text-sm font-medium text-foreground mb-2">
+                {uploadStatus === "validating" && "正在验证文件类型..."}
+                {uploadStatus === "extracting" && "正在解析条款内容..."}
+                {uploadStatus === "analyzing" && "正在分析关键信息..."}
+                {uploadStatus === "done" && "处理完成"}
+              </div>
               <div className="text-xs text-muted-foreground mb-4">
-                系统正在解析 PDF 并提取关键信息，请稍候
+                {uploadStatus === "validating" && "AI 正在确认这是保险条款文件"}
+                {uploadStatus === "extracting" && "并行解析 PDF 内容，请稍候"}
+                {uploadStatus === "analyzing" && "提取保障范围、等待期等关键信息"}
+                {uploadStatus === "done" && "条款已成功解析"}
               </div>
               {/* 进度条 */}
               <div className="w-full max-w-xs h-2 rounded-full overflow-hidden" style={{ backgroundColor: "rgba(255,255,255,0.08)" }}>
@@ -380,11 +498,11 @@ export default function PolicyUploadModal({
                   className="h-full rounded-full transition-all duration-300"
                   style={{
                     backgroundColor: "#F59E0B",
-                    width: `${uploadProgress}%`,
+                    width: `${Math.min(100, uploadProgress)}%`,
                   }}
                 />
               </div>
-              <div className="text-xs text-muted-foreground mt-2">{Math.round(uploadProgress)}%</div>
+              <div className="text-xs text-muted-foreground mt-2">{Math.min(100, Math.max(0, Math.round(uploadProgress)))}%</div>
             </div>
           </div>
         )}
@@ -405,7 +523,7 @@ export default function PolicyUploadModal({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf"
+                accept=".pdf,.PDF"
                 onChange={(e) => {
                   if (e.target.files?.[0]) {
                     handleFileSelect(e.target.files[0]);
@@ -423,10 +541,10 @@ export default function PolicyUploadModal({
                 </div>
                 <div>
                   <div className="text-sm font-medium text-foreground">
-                    {isDragging ? "释放鼠标上传文件" : "拖拽 PDF 文件到此，或点击选择"}
+                    {isDragging ? "释放鼠标上传文件" : "拖拽文件到此，或点击选择"}
                   </div>
                   <div className="text-xs text-muted-foreground mt-1">
-                    支持 PDF 格式，文件大小不超过 10MB
+                    支持 PDF 格式，文件大小不超过 10MB；AI 将自动验证是否为保险条款
                   </div>
                 </div>
               </div>
